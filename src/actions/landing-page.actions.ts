@@ -35,12 +35,17 @@ export async function getAdminDashboardStatsAction() {
 export async function getLandingPagesAction() {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
   const workspaceId = session.workspaceId;
+  const email = session.email?.toLowerCase().trim();
 
   const state = await fetchCloudState();
   let pages = state.landingPages || [];
 
-  if (session.role !== UserRole.SUPER_ADMIN && workspaceId) {
-    pages = pages.filter((p) => p.workspaceId === workspaceId);
+  if (session.role !== UserRole.SUPER_ADMIN) {
+    pages = pages.filter(
+      (p) =>
+        (workspaceId && p.workspaceId === workspaceId) ||
+        (email && p.userEmail && p.userEmail.toLowerCase().trim() === email)
+    );
   }
 
   return pages.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -53,7 +58,12 @@ export async function getLandingPageByIdAction(id: string) {
 
   if (!page) return null;
 
-  if (session.role !== UserRole.SUPER_ADMIN && session.workspaceId && page.workspaceId !== session.workspaceId) {
+  if (
+    session.role !== UserRole.SUPER_ADMIN &&
+    session.workspaceId &&
+    page.workspaceId !== session.workspaceId &&
+    page.userEmail !== session.email
+  ) {
     throw new Error('FORBIDDEN');
   }
 
@@ -62,12 +72,13 @@ export async function getLandingPageByIdAction(id: string) {
 
 export async function createLandingPageAction(data: any) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-  const workspaceId = session.workspaceId || 'default-workspace-id';
+  const workspaceId = session.workspaceId || `ws_${session.id}`;
+  const userEmail = session.email?.toLowerCase().trim();
 
   const formattedSlug = slugify(data.slug || data.name);
   const state = await fetchCloudState();
 
-  const slugExists = state.landingPages.some((p) => p.slug === formattedSlug);
+  const slugExists = state.landingPages.some((p) => p.slug.toLowerCase().trim() === formattedSlug);
   if (slugExists) {
     return { success: false, error: `Slug "${formattedSlug}" is already taken. Please choose another.` };
   }
@@ -75,6 +86,7 @@ export async function createLandingPageAction(data: any) {
   const newLandingPage = {
     id: `lp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     workspaceId,
+    userEmail,
     name: data.name,
     slug: formattedSlug,
     companyName: data.companyName || 'Company Name',
@@ -106,6 +118,7 @@ export async function createLandingPageAction(data: any) {
   revalidatePath('/super-admin/landing-pages');
   revalidatePath('/super-admin');
   revalidatePath(`/p/${formattedSlug}`);
+  revalidatePath(`/${formattedSlug}`);
 
   return { success: true, page: newLandingPage };
 }
@@ -120,14 +133,19 @@ export async function updateLandingPageAction(id: string, data: any) {
   }
 
   const existing = state.landingPages[pageIndex];
-  if (session.role !== UserRole.SUPER_ADMIN && session.workspaceId && existing.workspaceId !== session.workspaceId) {
+  if (
+    session.role !== UserRole.SUPER_ADMIN &&
+    session.workspaceId &&
+    existing.workspaceId !== session.workspaceId &&
+    existing.userEmail !== session.email
+  ) {
     return { success: false, error: 'Unauthorized access to this landing page' };
   }
 
   const formattedSlug = slugify(data.slug || data.name);
 
   if (formattedSlug !== existing.slug) {
-    const slugCheck = state.landingPages.some((p) => p.slug === formattedSlug && p.id !== id);
+    const slugCheck = state.landingPages.some((p) => p.slug.toLowerCase().trim() === formattedSlug && p.id !== id);
     if (slugCheck) {
       return { success: false, error: `Slug "${formattedSlug}" is already taken.` };
     }
@@ -135,6 +153,7 @@ export async function updateLandingPageAction(id: string, data: any) {
 
   const updatedPage = {
     ...existing,
+    userEmail: existing.userEmail || session.email?.toLowerCase().trim(),
     name: data.name,
     slug: formattedSlug,
     companyName: data.companyName,
@@ -164,8 +183,10 @@ export async function updateLandingPageAction(id: string, data: any) {
   revalidatePath('/super-admin');
   revalidatePath(`/dashboard/landing-pages/${id}/edit`);
   revalidatePath(`/p/${formattedSlug}`);
+  revalidatePath(`/${formattedSlug}`);
   if (existing.slug !== formattedSlug) {
     revalidatePath(`/p/${existing.slug}`);
+    revalidatePath(`/${existing.slug}`);
   }
 
   return { success: true, page: updatedPage };
@@ -178,7 +199,12 @@ export async function deleteLandingPageAction(id: string) {
   const page = state.landingPages.find((p) => p.id === id);
   if (!page) return { success: false, error: 'Landing page not found' };
 
-  if (session.role !== UserRole.SUPER_ADMIN && session.workspaceId && page.workspaceId !== session.workspaceId) {
+  if (
+    session.role !== UserRole.SUPER_ADMIN &&
+    session.workspaceId &&
+    page.workspaceId !== session.workspaceId &&
+    page.userEmail !== session.email
+  ) {
     return { success: false, error: 'Unauthorized' };
   }
 
@@ -190,6 +216,7 @@ export async function deleteLandingPageAction(id: string) {
   revalidatePath('/super-admin/landing-pages');
   revalidatePath('/super-admin');
   revalidatePath(`/p/${page.slug}`);
+  revalidatePath(`/${page.slug}`);
   return { success: true };
 }
 
@@ -200,7 +227,12 @@ export async function duplicateLandingPageAction(id: string) {
   const original = state.landingPages.find((p) => p.id === id);
   if (!original) return { success: false, error: 'Original landing page not found' };
 
-  if (session.role !== UserRole.SUPER_ADMIN && session.workspaceId && original.workspaceId !== session.workspaceId) {
+  if (
+    session.role !== UserRole.SUPER_ADMIN &&
+    session.workspaceId &&
+    original.workspaceId !== session.workspaceId &&
+    original.userEmail !== session.email
+  ) {
     return { success: false, error: 'Unauthorized' };
   }
 
@@ -208,6 +240,7 @@ export async function duplicateLandingPageAction(id: string) {
   const copyPage = {
     ...original,
     id: `lp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    userEmail: session.email?.toLowerCase().trim(),
     name: `${original.name} (Copy)`,
     slug: newSlug,
     status: PageStatus.INACTIVE,
@@ -235,7 +268,12 @@ export async function toggleLandingPageStatusAction(id: string) {
   if (pageIndex === -1) return { success: false, error: 'Landing page not found' };
 
   const existing = state.landingPages[pageIndex];
-  if (session.role !== UserRole.SUPER_ADMIN && session.workspaceId && existing.workspaceId !== session.workspaceId) {
+  if (
+    session.role !== UserRole.SUPER_ADMIN &&
+    session.workspaceId &&
+    existing.workspaceId !== session.workspaceId &&
+    existing.userEmail !== session.email
+  ) {
     return { success: false, error: 'Unauthorized' };
   }
 
