@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && prisma db push --accept-data-loss && npx tsx prisma/seed.ts && next build",
+    "build": "node scripts/prepare-env.js && prisma generate && prisma db push --accept-data-loss && npx tsx prisma/seed.ts && next build",
     "start": "next start",
     "lint": "next lint",
-    "postinstall": "prisma generate"
+    "postinstall": "node scripts/prepare-env.js && prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.3.1",
