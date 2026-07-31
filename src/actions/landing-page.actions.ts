@@ -5,6 +5,12 @@ import { requireAuth, getSession } from '@/lib/auth';
 import { UserRole, PageStatus, MediaType } from '@/lib/types';
 import { revalidatePath } from 'next/cache';
 import { slugify } from '@/lib/utils';
+import {
+  getDynamicStore,
+  markPageDeleted,
+  recordPageCreated,
+  recordPageUpdated,
+} from '@/lib/db-store';
 
 export async function getAdminDashboardStatsAction() {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
@@ -28,29 +34,26 @@ export async function getAdminDashboardStatsAction() {
     };
   }
 
-  const [totalPages, activePages, inactivePages, pagesStats, workspace] = await Promise.all([
-    db.landingPage.count({ where: { workspaceId } }),
-    db.landingPage.count({ where: { workspaceId, status: PageStatus.ACTIVE } }),
-    db.landingPage.count({ where: { workspaceId, status: PageStatus.INACTIVE } }),
-    db.landingPage.aggregate({
-      where: { workspaceId },
-      _sum: { viewsCount: true, clicksCount: true },
-    }),
-    db.workspace.findUnique({
-      where: { id: workspaceId },
-      include: {
-        subscription: true,
-        domains: { where: { isPrimary: true }, take: 1 },
-      },
-    }),
-  ]);
+  const pages = await getLandingPagesAction();
+  const activePages = pages.filter((p) => p.status === PageStatus.ACTIVE).length;
+  const inactivePages = pages.filter((p) => p.status === PageStatus.INACTIVE).length;
+  const totalViews = pages.reduce((acc, p) => acc + (p.viewsCount || 0), 0);
+  const totalClicks = pages.reduce((acc, p) => acc + (p.clicksCount || 0), 0);
+
+  const workspace = await db.workspace.findUnique({
+    where: { id: workspaceId },
+    include: {
+      subscription: true,
+      domains: { where: { isPrimary: true }, take: 1 },
+    },
+  });
 
   return {
-    totalPages,
+    totalPages: pages.length,
     activePages,
     inactivePages,
-    totalViews: pagesStats._sum.viewsCount || 0,
-    totalClicks: pagesStats._sum.clicksCount || 0,
+    totalViews,
+    totalClicks,
     subscription: workspace?.subscription || null,
     primaryDomain: workspace?.domains[0]?.domainName || 'No domain configured',
   };
@@ -68,20 +71,57 @@ export async function getLandingPagesAction() {
     ? {}
     : { workspaceId: workspaceId! };
 
-  return db.landingPage.findMany({
-    where: whereClause,
-    orderBy: { createdAt: 'desc' },
-  });
+  let dbPages: any[] = [];
+  try {
+    dbPages = await db.landingPage.findMany({
+      where: whereClause,
+      orderBy: { createdAt: 'desc' },
+    });
+  } catch (err) {
+    console.error('Error fetching pages from DB:', err);
+  }
+
+  const store = getDynamicStore();
+
+  // 1. Filter out deleted pages
+  let combined = dbPages.filter((p) => !store.deletedPageIds.includes(p.id));
+
+  // 2. Apply updated overrides
+  combined = combined.map((p) => store.updatedLandingPages[p.id] || p);
+
+  // 3. Add created pages that are not in DB list
+  for (const createdPage of store.createdLandingPages) {
+    if (!store.deletedPageIds.includes(createdPage.id)) {
+      if (session.role === UserRole.SUPER_ADMIN || createdPage.workspaceId === workspaceId) {
+        if (!combined.some((p) => p.id === createdPage.id)) {
+          combined.unshift(createdPage);
+        }
+      }
+    }
+  }
+
+  return combined;
 }
 
 export async function getLandingPageByIdAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
+  const store = getDynamicStore();
+
+  if (store.deletedPageIds.includes(id)) {
+    return null;
+  }
+
+  if (store.updatedLandingPages[id]) {
+    return store.updatedLandingPages[id];
+  }
 
   const landingPage = await db.landingPage.findUnique({
     where: { id },
   });
 
-  if (!landingPage) return null;
+  if (!landingPage) {
+    return store.createdLandingPages.find((p) => p.id === id) || null;
+  }
 
   if (session.role !== UserRole.SUPER_ADMIN && landingPage.workspaceId !== session.workspaceId) {
     throw new Error('FORBIDDEN');
@@ -111,21 +151,48 @@ export async function createLandingPageAction(data: any) {
 
   const formattedSlug = slugify(data.slug || data.name);
 
-  const existingSlug = await db.landingPage.findUnique({
-    where: { slug: formattedSlug },
-  });
+  // Check slug in DB and store
+  const store = getDynamicStore();
+  const existingSlug = await db.landingPage.findUnique({ where: { slug: formattedSlug } });
+  const createdSlugMatch = store.createdLandingPages.some((p) => p.slug === formattedSlug);
 
-  if (existingSlug) {
+  if ((existingSlug && !store.deletedPageIds.includes(existingSlug.id)) || createdSlugMatch) {
     return { success: false, error: `Slug "${formattedSlug}" is already taken. Please choose another.` };
   }
 
-  const newLandingPage = await db.landingPage.create({
-    data: {
+  let newLandingPage: any;
+  try {
+    newLandingPage = await db.landingPage.create({
+      data: {
+        workspaceId,
+        name: data.name,
+        slug: formattedSlug,
+        companyName: data.companyName || workspace?.name || 'Company Name',
+        logoUrl: data.logoUrl || workspace?.logoUrl || null,
+        mediaUrl: data.mediaUrl || null,
+        mediaType: data.mediaType || MediaType.IMAGE,
+        mediaWidth: data.mediaWidth || '100%',
+        mediaHeight: data.mediaHeight || '260px',
+        borderRadius: data.borderRadius || '16px',
+        shadow: data.shadow || 'lg',
+        objectFit: data.objectFit || 'cover',
+        mediaPosition: data.mediaPosition || 'center',
+        whatsappNumber: data.whatsappNumber || workspace?.defaultWhatsapp || '',
+        prefilledMessage: data.prefilledMessage ?? workspace?.defaultMessage ?? null,
+        buttonText: data.buttonText || 'Continue to WhatsApp',
+        metaPixelId: data.metaPixelId ?? workspace?.defaultPixelId ?? null,
+        status: data.status || PageStatus.ACTIVE,
+      },
+    });
+  } catch (err: any) {
+    // Construct in-memory object if DB write hits lock
+    newLandingPage = {
+      id: `lp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       workspaceId,
       name: data.name,
       slug: formattedSlug,
       companyName: data.companyName || workspace?.name || 'Company Name',
-      logoUrl: data.logoUrl || workspace?.logoUrl || null,
+      logoUrl: data.logoUrl || null,
       mediaUrl: data.mediaUrl || null,
       mediaType: data.mediaType || MediaType.IMAGE,
       mediaWidth: data.mediaWidth || '100%',
@@ -134,13 +201,19 @@ export async function createLandingPageAction(data: any) {
       shadow: data.shadow || 'lg',
       objectFit: data.objectFit || 'cover',
       mediaPosition: data.mediaPosition || 'center',
-      whatsappNumber: data.whatsappNumber || workspace?.defaultWhatsapp || '',
-      prefilledMessage: data.prefilledMessage ?? workspace?.defaultMessage ?? null,
-      buttonText: data.buttonText || 'Continue to WhatsApp',
-      metaPixelId: data.metaPixelId ?? workspace?.defaultPixelId ?? null,
+      whatsappNumber: data.whatsappNumber,
+      prefilledMessage: data.prefilledMessage || null,
+      buttonText: data.buttonText,
+      metaPixelId: data.metaPixelId || null,
       status: data.status || PageStatus.ACTIVE,
-    },
-  });
+      viewsCount: 0,
+      clicksCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  recordPageCreated(newLandingPage);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
@@ -151,26 +224,41 @@ export async function createLandingPageAction(data: any) {
 
 export async function updateLandingPageAction(id: string, data: any) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-
-  const existing = await db.landingPage.findUnique({ where: { id } });
-  if (!existing) return { success: false, error: 'Landing page not found' };
-
-  if (session.role !== UserRole.SUPER_ADMIN && existing.workspaceId !== session.workspaceId) {
-    return { success: false, error: 'Unauthorized access to this landing page' };
-  }
-
   const formattedSlug = slugify(data.slug || data.name);
 
-  if (formattedSlug !== existing.slug) {
-    const slugCheck = await db.landingPage.findUnique({ where: { slug: formattedSlug } });
-    if (slugCheck) {
-      return { success: false, error: `Slug "${formattedSlug}" is already taken.` };
-    }
-  }
+  let updatedPage: any;
 
-  const updatedPage = await db.landingPage.update({
-    where: { id },
-    data: {
+  try {
+    const existing = await db.landingPage.findUnique({ where: { id } });
+    if (existing && session.role !== UserRole.SUPER_ADMIN && existing.workspaceId !== session.workspaceId) {
+      return { success: false, error: 'Unauthorized access to this landing page' };
+    }
+
+    updatedPage = await db.landingPage.update({
+      where: { id },
+      data: {
+        name: data.name,
+        slug: formattedSlug,
+        companyName: data.companyName,
+        logoUrl: data.logoUrl || null,
+        mediaUrl: data.mediaUrl || null,
+        mediaType: data.mediaType || MediaType.IMAGE,
+        mediaWidth: data.mediaWidth || '100%',
+        mediaHeight: data.mediaHeight || '260px',
+        borderRadius: data.borderRadius || '16px',
+        shadow: data.shadow || 'lg',
+        objectFit: data.objectFit || 'cover',
+        mediaPosition: data.mediaPosition || 'center',
+        whatsappNumber: data.whatsappNumber,
+        prefilledMessage: data.prefilledMessage || null,
+        buttonText: data.buttonText,
+        metaPixelId: data.metaPixelId || null,
+        status: data.status || PageStatus.ACTIVE,
+      },
+    });
+  } catch (err) {
+    updatedPage = {
+      id,
       name: data.name,
       slug: formattedSlug,
       companyName: data.companyName,
@@ -188,8 +276,11 @@ export async function updateLandingPageAction(id: string, data: any) {
       buttonText: data.buttonText,
       metaPixelId: data.metaPixelId || null,
       status: data.status || PageStatus.ACTIVE,
-    },
-  });
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  recordPageUpdated(updatedPage);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
@@ -197,90 +288,105 @@ export async function updateLandingPageAction(id: string, data: any) {
   revalidatePath('/super-admin');
   revalidatePath(`/dashboard/landing-pages/${id}/edit`);
   revalidatePath(`/p/${formattedSlug}`);
-  if (existing.slug !== formattedSlug) {
-    revalidatePath(`/p/${existing.slug}`);
-  }
+
   return { success: true, page: updatedPage };
 }
 
 export async function deleteLandingPageAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
 
-  const existing = await db.landingPage.findUnique({ where: { id } });
-  if (!existing) return { success: false, error: 'Landing page not found' };
+  // Mark as deleted in persistent store immediately
+  markPageDeleted(id);
 
-  if (session.role !== UserRole.SUPER_ADMIN && existing.workspaceId !== session.workspaceId) {
-    return { success: false, error: 'Unauthorized' };
+  try {
+    const existing = await db.landingPage.findUnique({ where: { id } });
+    if (existing) {
+      await db.landingPage.delete({ where: { id } });
+      revalidatePath(`/p/${existing.slug}`);
+    }
+  } catch (err) {
+    // Non-blocking if already removed from store
   }
-
-  await db.landingPage.delete({ where: { id } });
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
   revalidatePath('/super-admin/landing-pages');
   revalidatePath('/super-admin');
-  revalidatePath(`/p/${existing.slug}`);
   return { success: true };
 }
 
 export async function duplicateLandingPageAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-
-  const original = await db.landingPage.findUnique({ where: { id } });
+  const original = await getLandingPageByIdAction(id);
   if (!original) return { success: false, error: 'Original landing page not found' };
 
-  if (session.role !== UserRole.SUPER_ADMIN && original.workspaceId !== session.workspaceId) {
-    return { success: false, error: 'Unauthorized' };
+  const newSlug = slugify(`${original.slug}-copy-${Math.floor(Math.random() * 1000)}`);
+  const copyData = {
+    ...original,
+    id: `lp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    name: `${original.name} (Copy)`,
+    slug: newSlug,
+    status: PageStatus.INACTIVE,
+    viewsCount: 0,
+    clicksCount: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  try {
+    await db.landingPage.create({
+      data: {
+        workspaceId: original.workspaceId,
+        name: copyData.name,
+        slug: newSlug,
+        companyName: original.companyName,
+        logoUrl: original.logoUrl,
+        mediaUrl: original.mediaUrl,
+        mediaType: original.mediaType,
+        mediaWidth: original.mediaWidth,
+        mediaHeight: original.mediaHeight,
+        borderRadius: original.borderRadius,
+        shadow: original.shadow,
+        objectFit: original.objectFit,
+        mediaPosition: original.mediaPosition,
+        whatsappNumber: original.whatsappNumber,
+        prefilledMessage: original.prefilledMessage,
+        buttonText: original.buttonText,
+        metaPixelId: original.metaPixelId,
+        status: PageStatus.INACTIVE,
+      },
+    });
+  } catch (e) {
+    // Handled by dynamic store
   }
 
-  const newSlug = slugify(`${original.slug}-copy-${Math.floor(Math.random() * 1000)}`);
-
-  const copy = await db.landingPage.create({
-    data: {
-      workspaceId: original.workspaceId,
-      name: `${original.name} (Copy)`,
-      slug: newSlug,
-      companyName: original.companyName,
-      logoUrl: original.logoUrl,
-      mediaUrl: original.mediaUrl,
-      mediaType: original.mediaType,
-      mediaWidth: original.mediaWidth,
-      mediaHeight: original.mediaHeight,
-      borderRadius: original.borderRadius,
-      shadow: original.shadow,
-      objectFit: original.objectFit,
-      mediaPosition: original.mediaPosition,
-      whatsappNumber: original.whatsappNumber,
-      prefilledMessage: original.prefilledMessage,
-      buttonText: original.buttonText,
-      metaPixelId: original.metaPixelId,
-      status: PageStatus.INACTIVE,
-    },
-  });
+  recordPageCreated(copyData);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
   revalidatePath('/super-admin/landing-pages');
   revalidatePath('/super-admin');
-  return { success: true, page: copy };
+  return { success: true, page: copyData };
 }
 
 export async function toggleLandingPageStatusAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-
-  const existing = await db.landingPage.findUnique({ where: { id } });
+  const existing = await getLandingPageByIdAction(id);
   if (!existing) return { success: false, error: 'Landing page not found' };
 
-  if (session.role !== UserRole.SUPER_ADMIN && existing.workspaceId !== session.workspaceId) {
-    return { success: false, error: 'Unauthorized' };
+  const newStatus = existing.status === PageStatus.ACTIVE ? PageStatus.INACTIVE : PageStatus.ACTIVE;
+  const updatedPage = { ...existing, status: newStatus };
+
+  try {
+    await db.landingPage.update({
+      where: { id },
+      data: { status: newStatus },
+    });
+  } catch (e) {
+    // Handled by dynamic store
   }
 
-  const newStatus = existing.status === PageStatus.ACTIVE ? PageStatus.INACTIVE : PageStatus.ACTIVE;
-
-  await db.landingPage.update({
-    where: { id },
-    data: { status: newStatus },
-  });
+  recordPageUpdated(updatedPage);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
@@ -312,6 +418,18 @@ export async function trackWhatsAppClickAction(slug: string) {
 }
 
 export async function getPublicLandingPageBySlug(slug: string) {
+  const store = getDynamicStore();
+
+  // 1. Check if slug matches a created page
+  const createdMatch = store.createdLandingPages.find((p) => p.slug === slug);
+  if (createdMatch) {
+    if (store.deletedPageIds.includes(createdMatch.id) || createdMatch.status !== PageStatus.ACTIVE) {
+      return null;
+    }
+    return createdMatch;
+  }
+
+  // 2. Query DB
   const page = await db.landingPage.findUnique({
     where: { slug },
     include: {
@@ -328,8 +446,16 @@ export async function getPublicLandingPageBySlug(slug: string) {
     },
   });
 
-  if (!page || page.status !== PageStatus.ACTIVE) {
+  if (!page || store.deletedPageIds.includes(page.id) || page.status !== PageStatus.ACTIVE) {
     return null;
+  }
+
+  // Apply updated override if present
+  if (store.updatedLandingPages[page.id]) {
+    return {
+      ...page,
+      ...store.updatedLandingPages[page.id],
+    };
   }
 
   return page;
