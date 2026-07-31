@@ -12,7 +12,7 @@ export const supabase = createClient(
 export const BUCKET_NAME = process.env.SUPABASE_STORAGE_BUCKET || 'wa-media';
 
 /**
- * Upload file buffer or File object to Supabase Storage and return public URL.
+ * Upload file buffer or ArrayBuffer to Supabase Storage with cache-busting timestamp.
  */
 export async function uploadMediaToSupabase(
   fileBuffer: Buffer | ArrayBuffer,
@@ -20,34 +20,39 @@ export async function uploadMediaToSupabase(
   contentType: string,
   folder: 'logos' | 'media' | 'favicons' = 'media'
 ): Promise<string> {
+  const timestamp = Date.now();
+  const randomSuffix = Math.random().toString(36).substring(2, 7);
+
+  // Extract extension
+  const extMatch = fileName.match(/\.([a-zA-Z0-9]+)$/);
+  const ext = extMatch ? `.${extMatch[1].toLowerCase()}` : '';
+  const baseName = fileName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const filePath = `${folder}/${folder.slice(0, -1)}_${timestamp}_${randomSuffix}_${baseName}${ext}`;
+
+  // If Supabase environment is not configured, convert buffer to Data URL fallback
   if (!supabaseUrl || supabaseUrl.includes('placeholder')) {
-    // Return mock placeholder URL for local development/test if Supabase keys not configured
-    const isVideo = contentType.includes('video');
-    if (isVideo) {
-      return 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
-    }
-    return `https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80`;
+    const base64 = Buffer.from(fileBuffer as any).toString('base64');
+    const mime = contentType || (fileName.endsWith('.mp4') ? 'video/mp4' : 'image/png');
+    return `data:${mime};base64,${base64}`;
   }
 
-  const cleanFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
-  const filePath = `${folder}/${Date.now()}_${cleanFileName}`;
-
-  // Ensure bucket exists or handle upload
+  // Upload to Supabase Storage
   const { error: uploadError } = await supabase.storage
     .from(BUCKET_NAME)
     .upload(filePath, fileBuffer, {
-      contentType,
+      contentType: contentType || 'application/octet-stream',
       upsert: true,
     });
 
   if (uploadError) {
     console.error('Supabase upload error:', uploadError);
-    throw new Error(`Failed to upload media to storage: ${uploadError.message}`);
+    throw new Error(`Failed to upload media: ${uploadError.message}`);
   }
 
   const { data: publicUrlData } = supabase.storage
     .from(BUCKET_NAME)
     .getPublicUrl(filePath);
 
-  return publicUrlData.publicUrl;
+  // Append timestamp query parameter to bust browser cache
+  return `${publicUrlData.publicUrl}?v=${timestamp}`;
 }

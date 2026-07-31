@@ -40,9 +40,7 @@ export function DashboardLayoutContent({ children, user }: DashboardLayoutProps)
   const superAdminNav = [
     { name: 'Dashboard', href: '/super-admin', icon: LayoutDashboard },
     { name: 'Admins', href: '/super-admin/admins', icon: Users },
-    { name: 'Workspaces', href: '/super-admin/workspaces', icon: ShieldCheck },
-    { name: 'Subscriptions', href: '/super-admin/workspaces', icon: FileText },
-    { name: 'Global Domains', href: '/super-admin/domains', icon: Globe },
+    { name: 'Settings', href: '/super-admin/domains', icon: Settings },
   ];
 
   const adminNav = [

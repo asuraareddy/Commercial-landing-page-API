@@ -71,8 +71,16 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const maxSize = type === 'logo' ? 10 * 1024 * 1024 : 100 * 1024 * 1024; // 10MB logo, 100MB media
+    if (file.size > maxSize) {
+      toast(`File size exceeds limit (${type === 'logo' ? '10MB' : '100MB'})`, 'error');
+      return;
+    }
+
     if (type === 'logo') setUploadingLogo(true);
     else setUploadingMedia(true);
+
+    toast(type === 'logo' ? 'Uploading logo...' : 'Uploading media...');
 
     try {
       const buffer = await file.arrayBuffer();
@@ -83,19 +91,17 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
         handleChange('logoUrl', publicUrl);
         toast('Logo uploaded successfully!');
       } else {
+        const isVideo = file.type.includes('video') || !!file.name.match(/\.(mp4|webm|mov)$/i);
         handleChange('mediaUrl', publicUrl);
-        if (file.type.includes('video')) {
-          handleChange('mediaType', 'VIDEO');
-        } else {
-          handleChange('mediaType', 'IMAGE');
-        }
-        toast('Media uploaded successfully!');
+        handleChange('mediaType', isVideo ? 'VIDEO' : 'IMAGE');
+        toast(`${isVideo ? 'Video' : 'Media/GIF'} uploaded successfully!`);
       }
     } catch (err: any) {
       toast(err.message || 'Upload failed', 'error');
     } finally {
       setUploadingLogo(false);
       setUploadingMedia(false);
+      e.target.value = '';
     }
   };
 
@@ -136,7 +142,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
             <h1 className="text-2xl font-extrabold text-white tracking-tight">
               {isEdit ? `Edit: ${formData.name}` : 'Create Landing Page'}
             </h1>
-            <p className="text-sm text-slate-400">Configure Meta Ads WhatsApp bridge micro page</p>
+            <p className="text-sm text-slate-400">Configure WhatsApp bridge micro landing page</p>
           </div>
         </div>
 
@@ -246,7 +252,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
                 )}
                 <label className="cursor-pointer px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-semibold text-white flex items-center gap-2 transition-colors">
                   <Upload className="w-3.5 h-3.5" />
-                  <span>{uploadingLogo ? 'Uploading...' : 'Upload Logo (PNG/JPG)'}</span>
+                  <span>{uploadingLogo ? 'Uploading Logo...' : 'Upload Logo (PNG / JPG / GIF)'}</span>
                   <input
                     type="file"
                     accept="image/*"
@@ -257,16 +263,16 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
               </div>
             </div>
 
-            {/* Main Media Upload (Image or Video) */}
+            {/* Main Media Upload (Image, GIF, MP4, WebM, MOV) */}
             <div className="space-y-2 pt-2 border-t border-slate-800">
-              <label className="text-xs font-semibold uppercase text-slate-300">Main Media (Image or MP4 Video)</label>
+              <label className="text-xs font-semibold uppercase text-slate-300">Main Media (Image, GIF, or Video: MP4 / WebM / MOV)</label>
               <div className="flex items-center gap-4">
                 <label className="cursor-pointer px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 rounded-xl text-xs font-semibold text-emerald-400 flex items-center gap-2 transition-colors">
                   <Upload className="w-4 h-4" />
-                  <span>{uploadingMedia ? 'Uploading to Supabase...' : 'Upload Image or MP4 Video'}</span>
+                  <span>{uploadingMedia ? 'Uploading File...' : 'Upload Image, GIF, or Video'}</span>
                   <input
                     type="file"
-                    accept="image/*,video/mp4"
+                    accept="image/*,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.gif"
                     onChange={(e) => handleFileUpload(e, 'media')}
                     className="hidden"
                   />
@@ -276,7 +282,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
                 )}
               </div>
               <p className="text-[11px] text-slate-500">
-                Uploaded files are stored directly in Supabase Storage. MP4 videos automatically autoplay, loop, and mute.
+                Supports PNG, JPG, GIF, MP4, WebM, and MOV formats. Videos automatically autoplay, loop, and mute.
               </p>
             </div>
 
@@ -295,8 +301,8 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
                     onChange={(e) => handleChange('mediaType', e.target.value)}
                     className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
                   >
-                    <option value="IMAGE">IMAGE</option>
-                    <option value="VIDEO">VIDEO (MP4)</option>
+                    <option value="IMAGE">IMAGE / GIF</option>
+                    <option value="VIDEO">VIDEO (MP4 / WebM / MOV)</option>
                   </select>
                 </div>
 
@@ -344,7 +350,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
                     onChange={(e) => handleChange('objectFit', e.target.value)}
                     className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
                   >
-                    <option value="cover">Cover</option>
+                    <option value="cover font-normal">Cover</option>
                     <option value="contain">Contain</option>
                     <option value="fill">Fill</option>
                   </select>
@@ -432,7 +438,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
           </div>
         </form>
 
-        {/* Live Interactive Preview Drawer */}
+        {/* Live Interactive Apple-Style Preview */}
         <div
           className={`lg:col-span-5 sticky top-6 ${
             activeTab === 'form' ? 'hidden lg:block' : 'block'
@@ -445,7 +451,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
                 Live Apple-Style Device Preview
               </span>
               <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full font-semibold">
-                Real-Time
+                Instant Sync
               </span>
             </div>
 

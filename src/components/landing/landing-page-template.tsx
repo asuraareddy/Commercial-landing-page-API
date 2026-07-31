@@ -55,7 +55,11 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
     }
   };
 
-  // Convert shadow string to CSS box-shadow
+  const isVideo =
+    data.mediaType === 'VIDEO' ||
+    !!data.mediaUrl?.match(/\.(mp4|webm|mov)($|\?)/i) ||
+    data.mediaUrl?.startsWith('data:video');
+
   const getShadowClass = (s?: string) => {
     switch (s) {
       case 'none': return 'shadow-none';
@@ -77,9 +81,10 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
         {/* Company Logo */}
         {data.logoUrl ? (
           <motion.div
+            key={`logo-${data.logoUrl}`}
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.4 }}
+            transition={{ duration: 0.3 }}
             className="w-16 h-16 md:w-20 md:h-20 rounded-2xl overflow-hidden shadow-lg border border-slate-100 p-1 bg-white flex items-center justify-center"
           >
             <img
@@ -102,11 +107,11 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.1 }}
+          transition={{ duration: 0.3 }}
           className="space-y-1"
         >
           <h1 className="text-xl md:text-2xl font-bold tracking-tight text-slate-900">
-            {data.companyName}
+            {data.companyName || 'Company Name'}
           </h1>
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -114,32 +119,36 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
           </div>
         </motion.div>
 
-        {/* Media (Image or Video) */}
+        {/* Media Display (Image, GIF, or HTML5 Video) */}
         {data.mediaUrl && (
           <motion.div
-            initial={{ opacity: 0, y: 15 }}
+            key={`media-${data.mediaUrl}-${data.mediaType}`}
+            initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.2 }}
+            transition={{ duration: 0.3 }}
             className="w-full overflow-hidden transition-all duration-300"
             style={{
               width: data.mediaWidth || '100%',
-              height: data.mediaHeight || 'auto',
+              height: data.mediaHeight || '260px',
               borderRadius: data.borderRadius || '16px',
             }}
           >
             <div className={`w-full h-full overflow-hidden border border-slate-100 ${getShadowClass(data.shadow)}`}>
-              {data.mediaType === 'VIDEO' ? (
+              {isVideo ? (
                 <video
+                  key={data.mediaUrl}
                   src={data.mediaUrl}
                   autoPlay
                   loop
                   muted
                   playsInline
-                  className="w-full h-full object-cover"
+                  controls={false}
+                  className="w-full h-full"
                   style={{ objectFit: (data.objectFit as any) || 'cover' }}
                 />
               ) : (
                 <img
+                  key={data.mediaUrl}
                   src={data.mediaUrl}
                   alt={data.companyName}
                   className="w-full h-full"
@@ -151,27 +160,17 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
         )}
 
         {/* Copy Messages */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.3 }}
-          className="space-y-2 px-2"
-        >
+        <div className="space-y-2 px-2">
           <h2 className="text-lg md:text-xl font-semibold text-slate-800 tracking-tight">
             Thank you for your interest.
           </h2>
           <p className="text-sm md:text-base text-slate-500 font-normal leading-relaxed">
             Click below to continue your conversation on WhatsApp.
           </p>
-        </motion.div>
+        </div>
 
         {/* Large Green WhatsApp CTA Button */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.4, delay: 0.4 }}
-          className="w-full pt-2"
-        >
+        <div className="w-full pt-2">
           <a
             href={isPreview ? '#' : whatsappUrl}
             target={isPreview ? '_self' : '_blank'}
@@ -183,18 +182,13 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
             <span>{data.buttonText || 'Continue to WhatsApp'}</span>
             <ExternalLink className="w-4 h-4 opacity-70 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
           </a>
-        </motion.div>
+        </div>
 
         {/* Security badge */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-          className="flex items-center justify-center gap-1.5 text-xs text-slate-400 pt-2"
-        >
+        <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400 pt-2">
           <ShieldCheck className="w-4 h-4 text-emerald-500" />
           End-to-End Encrypted WhatsApp Chat
-        </motion.div>
+        </div>
       </div>
 
       {/* Footer Branding */}
