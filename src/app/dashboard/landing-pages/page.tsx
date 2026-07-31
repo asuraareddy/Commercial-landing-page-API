@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   getLandingPagesAction,
   deleteLandingPageAction,
@@ -21,10 +22,10 @@ import {
   Eye,
   MousePointerClick,
   Power,
-  Sparkles,
 } from 'lucide-react';
 
 export default function AdminLandingPagesListPage() {
+  const router = useRouter();
   const { toast } = useToast();
   const [pages, setPages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,9 +37,14 @@ export default function AdminLandingPagesListPage() {
 
   const fetchPages = async () => {
     setLoading(true);
-    const data = await getLandingPagesAction();
-    setPages(data);
-    setLoading(false);
+    try {
+      const data = await getLandingPagesAction();
+      setPages(data);
+    } catch (err) {
+      toast('Failed to load landing pages', 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -46,33 +52,52 @@ export default function AdminLandingPagesListPage() {
   }, []);
 
   const handleToggleStatus = async (id: string) => {
+    // Optimistic toggle
+    setPages((prev) =>
+      prev.map((p) =>
+        p.id === id ? { ...p, status: p.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' } : p
+      )
+    );
+
     const res = await toggleLandingPageStatusAction(id);
     if (res.success) {
       toast(`Status updated to ${res.status}`);
-      fetchPages();
+      router.refresh();
     } else {
       toast(res.error || 'Failed to toggle status', 'error');
+      fetchPages(); // Revert on failure
     }
   };
 
   const handleDuplicate = async (id: string) => {
+    toast('Duplicating landing page...');
     const res = await duplicateLandingPageAction(id);
     if (res.success) {
       toast('Landing page duplicated successfully!');
       fetchPages();
+      router.refresh();
     } else {
       toast(res.error || 'Failed to duplicate page', 'error');
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this landing page?')) return;
+    if (!confirm('Are you sure you want to delete this landing page? This action cannot be undone.')) {
+      return;
+    }
+
+    const previousPages = [...pages];
+    // Optimistically remove from state immediately
+    setPages((prev) => prev.filter((p) => p.id !== id));
+    toast('Deleting landing page...');
+
     const res = await deleteLandingPageAction(id);
     if (res.success) {
-      toast('Landing page deleted');
-      fetchPages();
+      toast('Landing page deleted successfully!');
+      router.refresh();
     } else {
       toast(res.error || 'Failed to delete page', 'error');
+      setPages(previousPages); // Revert on failure
     }
   };
 
@@ -206,11 +231,11 @@ export default function AdminLandingPagesListPage() {
                       <div className="flex items-center gap-3 text-xs">
                         <span className="text-slate-400 flex items-center gap-1">
                           <Eye className="w-3.5 h-3.5 text-sky-400" />
-                          {page.viewsCount} views
+                          {page.viewsCount || 0} views
                         </span>
                         <span className="text-emerald-400 font-semibold flex items-center gap-1">
                           <MousePointerClick className="w-3.5 h-3.5 text-emerald-400" />
-                          {page.clicksCount} clicks
+                          {page.clicksCount || 0} clicks
                         </span>
                       </div>
                     </td>

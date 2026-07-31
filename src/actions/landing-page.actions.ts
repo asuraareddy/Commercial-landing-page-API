@@ -24,7 +24,7 @@ export async function getAdminDashboardStatsAction() {
       totalViews: 0,
       totalClicks: 0,
       subscription: null,
-      primaryDomain: null,
+      primaryDomain: 'No domain configured',
     };
   }
 
@@ -144,6 +144,8 @@ export async function createLandingPageAction(data: any) {
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
+  revalidatePath('/super-admin/landing-pages');
+  revalidatePath('/super-admin');
   return { success: true, page: newLandingPage };
 }
 
@@ -157,7 +159,7 @@ export async function updateLandingPageAction(id: string, data: any) {
     return { success: false, error: 'Unauthorized access to this landing page' };
   }
 
-  const formattedSlug = slugify(data.slug);
+  const formattedSlug = slugify(data.slug || data.name);
 
   if (formattedSlug !== existing.slug) {
     const slugCheck = await db.landingPage.findUnique({ where: { slug: formattedSlug } });
@@ -190,8 +192,14 @@ export async function updateLandingPageAction(id: string, data: any) {
   });
 
   revalidatePath('/dashboard/landing-pages');
+  revalidatePath('/dashboard');
+  revalidatePath('/super-admin/landing-pages');
+  revalidatePath('/super-admin');
   revalidatePath(`/dashboard/landing-pages/${id}/edit`);
   revalidatePath(`/p/${formattedSlug}`);
+  if (existing.slug !== formattedSlug) {
+    revalidatePath(`/p/${existing.slug}`);
+  }
   return { success: true, page: updatedPage };
 }
 
@@ -209,6 +217,9 @@ export async function deleteLandingPageAction(id: string) {
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
+  revalidatePath('/super-admin/landing-pages');
+  revalidatePath('/super-admin');
+  revalidatePath(`/p/${existing.slug}`);
   return { success: true };
 }
 
@@ -248,6 +259,9 @@ export async function duplicateLandingPageAction(id: string) {
   });
 
   revalidatePath('/dashboard/landing-pages');
+  revalidatePath('/dashboard');
+  revalidatePath('/super-admin/landing-pages');
+  revalidatePath('/super-admin');
   return { success: true, page: copy };
 }
 
@@ -270,6 +284,8 @@ export async function toggleLandingPageStatusAction(id: string) {
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
+  revalidatePath('/super-admin/landing-pages');
+  revalidatePath('/super-admin');
   return { success: true, status: newStatus };
 }
 
