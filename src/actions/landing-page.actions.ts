@@ -1,38 +1,19 @@
 'use server';
 
-import { db } from '@/lib/db';
 import { requireAuth, getSession } from '@/lib/auth';
 import { UserRole, PageStatus, MediaType } from '@/lib/types';
 import { revalidatePath } from 'next/cache';
 import { slugify } from '@/lib/utils';
-import { getCloudDb, saveCloudDb } from '@/lib/cloud-db';
+import { fetchCloudState, saveCloudState } from '@/lib/cloud-store';
 
 export async function getAdminDashboardStatsAction() {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-  
-  let workspaceId = session.workspaceId;
-
-  if (!workspaceId && session.role === UserRole.SUPER_ADMIN) {
-    const firstWs = await db.workspace.findFirst();
-    workspaceId = firstWs?.id;
-  }
-
   const pages = await getLandingPagesAction();
+
   const activePages = pages.filter((p) => p.status === PageStatus.ACTIVE).length;
   const inactivePages = pages.filter((p) => p.status === PageStatus.INACTIVE).length;
   const totalViews = pages.reduce((acc, p) => acc + (p.viewsCount || 0), 0);
   const totalClicks = pages.reduce((acc, p) => acc + (p.clicksCount || 0), 0);
-
-  let workspace = null;
-  if (workspaceId) {
-    workspace = await db.workspace.findUnique({
-      where: { id: workspaceId },
-      include: {
-        subscription: true,
-        domains: { where: { isPrimary: true }, take: 1 },
-      },
-    });
-  }
 
   return {
     totalPages: pages.length,
@@ -40,8 +21,14 @@ export async function getAdminDashboardStatsAction() {
     inactivePages,
     totalViews,
     totalClicks,
-    subscription: workspace?.subscription || null,
-    primaryDomain: workspace?.domains[0]?.domainName || 'No domain configured',
+    subscription: {
+      planName: 'Unlimited SaaS License',
+      price: 500.0,
+      currency: 'USD',
+      billingType: 'One Time',
+      status: 'ACTIVE',
+    },
+    primaryDomain: 'go.wagateway.com',
   };
 }
 
@@ -49,11 +36,11 @@ export async function getLandingPagesAction() {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
   const workspaceId = session.workspaceId;
 
-  const state = await getCloudDb();
+  const state = await fetchCloudState();
   let pages = state.landingPages || [];
 
-  if (session.role !== UserRole.SUPER_ADMIN || workspaceId) {
-    pages = pages.filter((p) => !workspaceId || p.workspaceId === workspaceId);
+  if (session.role !== UserRole.SUPER_ADMIN && workspaceId) {
+    pages = pages.filter((p) => p.workspaceId === workspaceId);
   }
 
   return pages.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -61,7 +48,7 @@ export async function getLandingPagesAction() {
 
 export async function getLandingPageByIdAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-  const state = await getCloudDb();
+  const state = await fetchCloudState();
   const page = state.landingPages.find((p) => p.id === id);
 
   if (!page) return null;
@@ -75,36 +62,23 @@ export async function getLandingPageByIdAction(id: string) {
 
 export async function createLandingPageAction(data: any) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-  
-  let workspaceId = session.workspaceId;
-
-  if (!workspaceId && session.role === UserRole.SUPER_ADMIN) {
-    const firstWs = await db.workspace.findFirst();
-    if (!firstWs) return { success: false, error: 'No workspace exists' };
-    workspaceId = firstWs.id;
-  }
-
-  if (!workspaceId) {
-    return { success: false, error: 'Workspace not found' };
-  }
+  const workspaceId = session.workspaceId || 'default-workspace-id';
 
   const formattedSlug = slugify(data.slug || data.name);
-  const state = await getCloudDb();
+  const state = await fetchCloudState();
 
   const slugExists = state.landingPages.some((p) => p.slug === formattedSlug);
   if (slugExists) {
     return { success: false, error: `Slug "${formattedSlug}" is already taken. Please choose another.` };
   }
 
-  const workspace = await db.workspace.findUnique({ where: { id: workspaceId } });
-
   const newLandingPage = {
     id: `lp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
     workspaceId,
     name: data.name,
     slug: formattedSlug,
-    companyName: data.companyName || workspace?.name || 'Company Name',
-    logoUrl: data.logoUrl || workspace?.logoUrl || null,
+    companyName: data.companyName || 'Company Name',
+    logoUrl: data.logoUrl || null,
     mediaUrl: data.mediaUrl || null,
     mediaType: data.mediaType || MediaType.IMAGE,
     mediaWidth: data.mediaWidth || '100%',
@@ -113,10 +87,10 @@ export async function createLandingPageAction(data: any) {
     shadow: data.shadow || 'lg',
     objectFit: data.objectFit || 'cover',
     mediaPosition: data.mediaPosition || 'center',
-    whatsappNumber: data.whatsappNumber || workspace?.defaultWhatsapp || '',
-    prefilledMessage: data.prefilledMessage ?? workspace?.defaultMessage ?? null,
+    whatsappNumber: data.whatsappNumber || '',
+    prefilledMessage: data.prefilledMessage || null,
     buttonText: data.buttonText || 'Continue to WhatsApp',
-    metaPixelId: data.metaPixelId ?? workspace?.defaultPixelId ?? null,
+    metaPixelId: data.metaPixelId || null,
     status: data.status || PageStatus.ACTIVE,
     viewsCount: 0,
     clicksCount: 0,
@@ -125,7 +99,7 @@ export async function createLandingPageAction(data: any) {
   };
 
   state.landingPages.unshift(newLandingPage);
-  await saveCloudDb(state);
+  await saveCloudState(state);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
@@ -138,7 +112,7 @@ export async function createLandingPageAction(data: any) {
 
 export async function updateLandingPageAction(id: string, data: any) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-  const state = await getCloudDb();
+  const state = await fetchCloudState();
   const pageIndex = state.landingPages.findIndex((p) => p.id === id);
 
   if (pageIndex === -1) {
@@ -182,7 +156,7 @@ export async function updateLandingPageAction(id: string, data: any) {
   };
 
   state.landingPages[pageIndex] = updatedPage;
-  await saveCloudDb(state);
+  await saveCloudState(state);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
@@ -199,7 +173,7 @@ export async function updateLandingPageAction(id: string, data: any) {
 
 export async function deleteLandingPageAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-  const state = await getCloudDb();
+  const state = await fetchCloudState();
 
   const page = state.landingPages.find((p) => p.id === id);
   if (!page) return { success: false, error: 'Landing page not found' };
@@ -209,7 +183,7 @@ export async function deleteLandingPageAction(id: string) {
   }
 
   state.landingPages = state.landingPages.filter((p) => p.id !== id);
-  await saveCloudDb(state);
+  await saveCloudState(state);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
@@ -221,7 +195,7 @@ export async function deleteLandingPageAction(id: string) {
 
 export async function duplicateLandingPageAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-  const state = await getCloudDb();
+  const state = await fetchCloudState();
 
   const original = state.landingPages.find((p) => p.id === id);
   if (!original) return { success: false, error: 'Original landing page not found' };
@@ -244,7 +218,7 @@ export async function duplicateLandingPageAction(id: string) {
   };
 
   state.landingPages.unshift(copyPage);
-  await saveCloudDb(state);
+  await saveCloudState(state);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
@@ -255,7 +229,7 @@ export async function duplicateLandingPageAction(id: string) {
 
 export async function toggleLandingPageStatusAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-  const state = await getCloudDb();
+  const state = await fetchCloudState();
 
   const pageIndex = state.landingPages.findIndex((p) => p.id === id);
   if (pageIndex === -1) return { success: false, error: 'Landing page not found' };
@@ -269,7 +243,7 @@ export async function toggleLandingPageStatusAction(id: string) {
   state.landingPages[pageIndex].status = newStatus;
   state.landingPages[pageIndex].updatedAt = new Date().toISOString();
 
-  await saveCloudDb(state);
+  await saveCloudState(state);
 
   revalidatePath('/dashboard/landing-pages');
   revalidatePath('/dashboard');
@@ -280,11 +254,11 @@ export async function toggleLandingPageStatusAction(id: string) {
 
 export async function trackPageViewAction(slug: string) {
   try {
-    const state = await getCloudDb();
+    const state = await fetchCloudState();
     const pageIndex = state.landingPages.findIndex((p) => p.slug === slug);
     if (pageIndex !== -1) {
       state.landingPages[pageIndex].viewsCount = (state.landingPages[pageIndex].viewsCount || 0) + 1;
-      await saveCloudDb(state);
+      await saveCloudState(state);
     }
   } catch (error) {
     // Non-blocking
@@ -293,11 +267,11 @@ export async function trackPageViewAction(slug: string) {
 
 export async function trackWhatsAppClickAction(slug: string) {
   try {
-    const state = await getCloudDb();
+    const state = await fetchCloudState();
     const pageIndex = state.landingPages.findIndex((p) => p.slug === slug);
     if (pageIndex !== -1) {
       state.landingPages[pageIndex].clicksCount = (state.landingPages[pageIndex].clicksCount || 0) + 1;
-      await saveCloudDb(state);
+      await saveCloudState(state);
     }
   } catch (error) {
     // Non-blocking
@@ -305,7 +279,7 @@ export async function trackWhatsAppClickAction(slug: string) {
 }
 
 export async function getPublicLandingPageBySlug(slug: string) {
-  const state = await getCloudDb();
+  const state = await fetchCloudState();
   const page = state.landingPages.find((p) => p.slug === slug && p.status === PageStatus.ACTIVE);
 
   if (!page) {
