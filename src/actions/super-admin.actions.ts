@@ -2,7 +2,7 @@
 
 import { db } from '@/lib/db';
 import { requireAuth } from '@/lib/auth';
-import { UserRole, SubscriptionStatus } from '@/lib/types';
+import { UserRole, SubscriptionStatus, DomainStatus } from '@/lib/types';
 import bcrypt from 'bcryptjs';
 import { revalidatePath } from 'next/cache';
 
@@ -60,6 +60,28 @@ export async function getAdminsAction() {
   });
 }
 
+export async function getAllLandingPagesForSuperAdminAction() {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  return db.landingPage.findMany({
+    include: {
+      workspace: {
+        select: {
+          id: true,
+          name: true,
+          user: {
+            select: {
+              id: true,
+              email: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
 export async function createAdminAction(formData: FormData) {
   await requireAuth([UserRole.SUPER_ADMIN]);
 
@@ -86,6 +108,7 @@ export async function createAdminAction(formData: FormData) {
       workspace: {
         create: {
           name: workspaceName,
+          supportEmail: email,
           subscription: {
             create: {
               planName: 'Unlimited',
@@ -155,43 +178,6 @@ export async function deleteAdminAction(userId: string) {
   return { success: true };
 }
 
-export async function getAllWorkspacesAction() {
-  await requireAuth([UserRole.SUPER_ADMIN]);
-
-  return db.workspace.findMany({
-    include: {
-      user: {
-        select: { id: true, email: true, isSuspended: true },
-      },
-      subscription: true,
-      domains: true,
-      landingPages: {
-        select: {
-          id: true,
-          name: true,
-          slug: true,
-          status: true,
-          viewsCount: true,
-          clicksCount: true,
-        },
-      },
-    },
-    orderBy: { createdAt: 'desc' },
-  });
-}
-
-export async function updateSubscriptionStatusAction(workspaceId: string, status: SubscriptionStatus | string) {
-  await requireAuth([UserRole.SUPER_ADMIN]);
-
-  await db.subscription.update({
-    where: { workspaceId },
-    data: { status },
-  });
-
-  revalidatePath('/super-admin/workspaces');
-  return { success: true };
-}
-
 export async function getAllDomainsAction() {
   await requireAuth([UserRole.SUPER_ADMIN]);
 
@@ -203,4 +189,95 @@ export async function getAllDomainsAction() {
     },
     orderBy: { createdAt: 'desc' },
   });
+}
+
+export async function createGlobalDomainAction(formData: FormData) {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  const domainName = formData.get('domainName')?.toString().toLowerCase().trim();
+
+  if (!domainName) {
+    return { success: false, error: 'Domain name is required' };
+  }
+
+  const existing = await db.domain.findUnique({ where: { domainName } });
+  if (existing) {
+    return { success: false, error: `Domain "${domainName}" is already registered` };
+  }
+
+  const firstWs = await db.workspace.findFirst();
+  if (!firstWs) return { success: false, error: 'No workspace found to assign domain' };
+
+  const newDomain = await db.domain.create({
+    data: {
+      workspaceId: firstWs.id,
+      domainName,
+      status: DomainStatus.ACTIVE,
+      isPrimary: false,
+    },
+  });
+
+  revalidatePath('/super-admin/domains');
+  revalidatePath('/super-admin');
+  return { success: true, domain: newDomain };
+}
+
+export async function toggleGlobalDomainStatusAction(id: string) {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  const domain = await db.domain.findUnique({ where: { id } });
+  if (!domain) return { success: false, error: 'Domain not found' };
+
+  const newStatus = domain.status === DomainStatus.ACTIVE ? DomainStatus.PENDING : DomainStatus.ACTIVE;
+
+  await db.domain.update({
+    where: { id },
+    data: { status: newStatus },
+  });
+
+  revalidatePath('/super-admin/domains');
+  return { success: true, status: newStatus };
+}
+
+export async function deleteGlobalDomainAction(id: string) {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  await db.domain.delete({ where: { id } });
+
+  revalidatePath('/super-admin/domains');
+  return { success: true };
+}
+
+export async function getAllWorkspacesAction() {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  return db.workspace.findMany({
+    include: {
+      user: { select: { email: true } },
+      subscription: true,
+      landingPages: { select: { id: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+export async function updateSubscriptionStatusAction(workspaceId: string, status: SubscriptionStatus) {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  const ws = await db.workspace.findUnique({
+    where: { id: workspaceId },
+    include: { subscription: true },
+  });
+
+  if (!ws || !ws.subscription) {
+    return { success: false, error: 'Subscription not found' };
+  }
+
+  await db.subscription.update({
+    where: { id: ws.subscription.id },
+    data: { status },
+  });
+
+  revalidatePath('/super-admin/workspaces');
+  return { success: true };
 }

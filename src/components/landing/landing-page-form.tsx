@@ -107,23 +107,51 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitting(true);
 
-    let res;
-    if (isEdit && initialData?.id) {
-      res = await updateLandingPageAction(initialData.id, formData);
-    } else {
-      res = await createLandingPageAction(formData);
+    if (!formData.name.trim()) {
+      toast('Internal page name is required', 'error');
+      return;
     }
 
-    setSubmitting(false);
+    if (!formData.companyName.trim()) {
+      toast('Company name is required', 'error');
+      return;
+    }
 
-    if (res.success) {
-      toast(isEdit ? 'Landing page updated!' : 'Landing page created!');
-      router.push('/dashboard/landing-pages');
-      router.refresh();
-    } else {
-      toast(res.error || 'Failed to save landing page', 'error');
+    if (!formData.whatsappNumber.trim()) {
+      toast('WhatsApp number is required', 'error');
+      return;
+    }
+
+    setSubmitting(true);
+    toast('Saving landing page...');
+
+    try {
+      let res;
+      if (isEdit && initialData?.id) {
+        res = await updateLandingPageAction(initialData.id, formData);
+      } else {
+        res = await createLandingPageAction(formData);
+      }
+
+      setSubmitting(false);
+
+      if (res.success) {
+        toast(isEdit ? 'Landing page updated successfully!' : 'Landing page created successfully!');
+        if (res.page) {
+          setFormData((prev) => ({
+            ...prev,
+            ...res.page,
+          }));
+        }
+        router.push('/dashboard/landing-pages');
+        router.refresh();
+      } else {
+        toast(res.error || 'Failed to save landing page', 'error');
+      }
+    } catch (err: any) {
+      setSubmitting(false);
+      toast(err.message || 'An error occurred while saving', 'error');
     }
   };
 
@@ -146,7 +174,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
           </div>
         </div>
 
-        {/* View Toggle Tabs for Mobile/Tablet */}
+        {/* View Toggle Tabs for Mobile/Tablet & Save Action */}
         <div className="flex items-center gap-2">
           <div className="flex lg:hidden bg-slate-900 p-1 rounded-xl border border-slate-800">
             <button
@@ -170,9 +198,10 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
           </div>
 
           <button
-            onClick={handleSubmit}
+            type="submit"
+            form="landing-page-edit-form"
             disabled={submitting}
-            className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-2 disabled:opacity-50"
+            className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-slate-950 font-bold rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-2 disabled:opacity-50"
           >
             <Save className="w-4 h-4" />
             <span>{submitting ? 'Saving...' : 'Save Landing Page'}</span>
@@ -184,6 +213,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         {/* Form Section */}
         <form
+          id="landing-page-edit-form"
           onSubmit={handleSubmit}
           className={`lg:col-span-7 space-y-6 ${activeTab === 'preview' ? 'hidden lg:block' : 'block'}`}
         >
@@ -196,7 +226,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase text-slate-300">Internal Page Name</label>
+                <label className="text-xs font-semibold uppercase text-slate-300">Internal Page Name *</label>
                 <input
                   type="text"
                   required
@@ -208,7 +238,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase text-slate-300">URL Slug</label>
+                <label className="text-xs font-semibold uppercase text-slate-300">URL Slug *</label>
                 <div className="relative">
                   <span className="absolute left-3 top-2.5 text-xs font-mono text-slate-500">/p/</span>
                   <input
@@ -224,7 +254,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase text-slate-300">Company Name</label>
+              <label className="text-xs font-semibold uppercase text-slate-300">Company Name *</label>
               <input
                 type="text"
                 required
@@ -350,7 +380,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
                     onChange={(e) => handleChange('objectFit', e.target.value)}
                     className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
                   >
-                    <option value="cover font-normal">Cover</option>
+                    <option value="cover">Cover</option>
                     <option value="contain">Contain</option>
                     <option value="fill">Fill</option>
                   </select>
@@ -368,7 +398,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase text-slate-300">WhatsApp Number</label>
+                <label className="text-xs font-semibold uppercase text-slate-300">WhatsApp Number *</label>
                 <input
                   type="text"
                   required
@@ -380,7 +410,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase text-slate-300">Button CTA Text</label>
+                <label className="text-xs font-semibold uppercase text-slate-300">Button CTA Text *</label>
                 <input
                   type="text"
                   required
@@ -435,6 +465,15 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
                 </select>
               </div>
             </div>
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full py-3.5 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.99] text-slate-950 font-extrabold rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50 mt-4"
+            >
+              <Save className="w-4 h-4" />
+              <span>{submitting ? 'Saving Changes...' : 'Save Landing Page'}</span>
+            </button>
           </div>
         </form>
 
