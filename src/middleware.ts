@@ -18,14 +18,10 @@ export async function middleware(request: NextRequest) {
   const isStandardRoute = 
     pathname === '/' ||
     pathname.startsWith('/login') ||
+    pathname.startsWith('/signup') ||
     pathname.startsWith('/dashboard') ||
     pathname.startsWith('/super-admin') ||
-    pathname.startsWith('/admin') ||
     pathname.startsWith('/forgot-password') ||
-    pathname.startsWith('/page1') ||
-    pathname.startsWith('/page2') ||
-    pathname.startsWith('/page3') ||
-    pathname.startsWith('/page4') ||
     pathname.startsWith('/p/');
 
   // 3. Custom Domain Routing (e.g. go.client.com/slug)

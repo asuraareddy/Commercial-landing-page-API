@@ -39,8 +39,9 @@ export function DashboardLayoutContent({ children, user }: DashboardLayoutProps)
 
   const superAdminNav = [
     { name: 'Dashboard', href: '/super-admin', icon: LayoutDashboard },
-    { name: 'Admin Accounts', href: '/super-admin/admins', icon: Users },
+    { name: 'Admins', href: '/super-admin/admins', icon: Users },
     { name: 'Workspaces', href: '/super-admin/workspaces', icon: ShieldCheck },
+    { name: 'Subscriptions', href: '/super-admin/workspaces', icon: FileText },
     { name: 'Global Domains', href: '/super-admin/domains', icon: Globe },
   ];
 
@@ -49,7 +50,6 @@ export function DashboardLayoutContent({ children, user }: DashboardLayoutProps)
     { name: 'Landing Pages', href: '/dashboard/landing-pages', icon: FileText },
     { name: 'Workspace Settings', href: '/dashboard/settings', icon: Settings },
     { name: 'Custom Domains', href: '/dashboard/domains', icon: Globe },
-    { name: 'My Profile', href: '/dashboard/profile', icon: User },
   ];
 
   const navItems = isSuperAdmin ? superAdminNav : adminNav;

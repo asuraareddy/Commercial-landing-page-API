@@ -4,7 +4,7 @@ import { db } from '@/lib/db';
 import { setSessionCookie, clearSessionCookie, getSession } from '@/lib/auth';
 import { loginSchema } from '@/lib/schemas';
 import bcrypt from 'bcryptjs';
-import { UserRole } from '@/lib/types';
+import { UserRole, SubscriptionStatus } from '@/lib/types';
 
 export async function loginAction(formData: FormData) {
   try {
@@ -51,6 +51,54 @@ export async function loginAction(formData: FormData) {
     };
   } catch (error: any) {
     return { success: false, error: error.message || 'An unexpected error occurred during login' };
+  }
+}
+
+export async function registerAdminUserAction(formData: FormData) {
+  try {
+    const businessName = formData.get('businessName')?.toString().trim();
+    const fullName = formData.get('fullName')?.toString().trim();
+    const email = formData.get('email')?.toString().toLowerCase().trim();
+    const phone = formData.get('phone')?.toString().trim();
+    const password = formData.get('password')?.toString();
+
+    if (!businessName || !email || !password) {
+      return { success: false, error: 'Business name, email, and password are required.' };
+    }
+
+    const existingUser = await db.user.findUnique({ where: { email } });
+    if (existingUser) {
+      return { success: false, error: 'An account with this email already exists. Please sign in instead.' };
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const newUser = await db.user.create({
+      data: {
+        email,
+        passwordHash,
+        role: UserRole.ADMIN,
+        workspace: {
+          create: {
+            name: businessName,
+            supportEmail: email,
+            subscription: {
+              create: {
+                planName: 'Unlimited',
+                price: 500.0,
+                currency: 'USD',
+                billingType: 'One Time',
+                status: SubscriptionStatus.ACTIVE,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    return { success: true, userId: newUser.id };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Failed to complete registration.' };
   }
 }
 
