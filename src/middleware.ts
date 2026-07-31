@@ -5,7 +5,7 @@ export async function middleware(request: NextRequest) {
   const { pathname, host } = request.nextUrl;
   const token = request.cookies.get('wa_session')?.value;
 
-  // 1. Static asset or API bypass
+  // 1. Static asset, API, or system route bypass
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/api') ||
@@ -14,17 +14,40 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // 2. Custom Domain Routing (e.g. go.client.com)
-  const mainDomain = process.env.NEXT_PUBLIC_APP_URL ? new URL(process.env.NEXT_PUBLIC_APP_URL).host : 'localhost:3000';
-  const cleanHost = host.split(':')[0];
-  const cleanMainHost = mainDomain.split(':')[0];
+  // 2. Standard App Routes that should NEVER be rewritten to custom domain /p/[slug]
+  const isStandardRoute = 
+    pathname === '/' ||
+    pathname.startsWith('/login') ||
+    pathname.startsWith('/dashboard') ||
+    pathname.startsWith('/super-admin') ||
+    pathname.startsWith('/admin') ||
+    pathname.startsWith('/forgot-password') ||
+    pathname.startsWith('/page1') ||
+    pathname.startsWith('/page2') ||
+    pathname.startsWith('/page3') ||
+    pathname.startsWith('/page4') ||
+    pathname.startsWith('/p/');
 
-  if (cleanHost !== cleanMainHost && !cleanHost.includes('localhost') && !cleanHost.includes('vercel.app')) {
-    // Rewrite host to public landing page router or custom domain handler
-    return NextResponse.rewrite(new URL(`/p/${pathname.replace('/', '')}`, request.url));
+  // 3. Custom Domain Routing (e.g. go.client.com/slug)
+  const mainDomain = process.env.NEXT_PUBLIC_APP_URL ? new URL(process.env.NEXT_PUBLIC_APP_URL).host : '';
+  const cleanHost = host.split(':')[0];
+  const cleanMainHost = mainDomain ? mainDomain.split(':')[0] : '';
+
+  // Only rewrite to /p/[slug] if it's a custom domain AND NOT a standard app route
+  if (
+    !isStandardRoute &&
+    cleanMainHost &&
+    cleanHost !== cleanMainHost &&
+    !cleanHost.includes('localhost') &&
+    !cleanHost.includes('vercel.app')
+  ) {
+    const slug = pathname.replace('/', '');
+    if (slug) {
+      return NextResponse.rewrite(new URL(`/p/${slug}`, request.url));
+    }
   }
 
-  // 3. Auth protected route checking
+  // 4. Auth protected route checking
   const isSuperAdminRoute = pathname.startsWith('/super-admin');
   const isAdminDashboardRoute = pathname.startsWith('/dashboard');
 
