@@ -255,7 +255,8 @@ export async function toggleLandingPageStatusAction(id: string) {
 export async function trackPageViewAction(slug: string) {
   try {
     const state = await fetchCloudState();
-    const pageIndex = state.landingPages.findIndex((p) => p.slug === slug);
+    const cleanSlug = slug ? slug.toLowerCase().trim() : '';
+    const pageIndex = state.landingPages.findIndex((p) => p.slug.toLowerCase().trim() === cleanSlug);
     if (pageIndex !== -1) {
       state.landingPages[pageIndex].viewsCount = (state.landingPages[pageIndex].viewsCount || 0) + 1;
       await saveCloudState(state);
@@ -268,7 +269,8 @@ export async function trackPageViewAction(slug: string) {
 export async function trackWhatsAppClickAction(slug: string) {
   try {
     const state = await fetchCloudState();
-    const pageIndex = state.landingPages.findIndex((p) => p.slug === slug);
+    const cleanSlug = slug ? slug.toLowerCase().trim() : '';
+    const pageIndex = state.landingPages.findIndex((p) => p.slug.toLowerCase().trim() === cleanSlug);
     if (pageIndex !== -1) {
       state.landingPages[pageIndex].clicksCount = (state.landingPages[pageIndex].clicksCount || 0) + 1;
       await saveCloudState(state);
@@ -279,8 +281,11 @@ export async function trackWhatsAppClickAction(slug: string) {
 }
 
 export async function getPublicLandingPageBySlug(slug: string) {
+  const cleanSlug = slug ? slug.toLowerCase().trim() : '';
   const state = await fetchCloudState();
-  const page = state.landingPages.find((p) => p.slug === slug && p.status === PageStatus.ACTIVE);
+  const page = state.landingPages.find(
+    (p) => p.slug.toLowerCase().trim() === cleanSlug && p.status === PageStatus.ACTIVE
+  );
 
   if (!page) {
     return null;

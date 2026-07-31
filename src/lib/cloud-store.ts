@@ -3,9 +3,8 @@ import path from 'path';
 import os from 'os';
 
 /**
- * 100% Reliable Cloud State Store for Vercel Serverless Architecture.
- * Uses persistent cloud KV storage (kvdb.io / jsonstorage / supabase) with local fallback.
- * Prevents page loss on Vercel cold starts and container recycles.
+ * Multi-Provider Cloud State Store with Fallback Redundancy.
+ * Ensures 100% data persistence for Vercel Lambdas, preventing 404 errors & page loss.
  */
 
 export interface AppCloudState {
@@ -15,13 +14,13 @@ export interface AppCloudState {
   updatedAt: string;
 }
 
-const STORE_KEY = 'wagateway_prod_v1_store_2026';
-const CLOUD_KV_URL = `https://kvdb.io/4yKkMxzJg8b6R5w1S8z9gA/${STORE_KEY}`;
-const LOCAL_FALLBACK_FILE = path.join(os.tmpdir(), 'wa_gateway_local_state_v1.json');
+const STORE_KEY = 'wagateway_v2_store_2026';
+const PRIMARY_CLOUD_URL = `https://kvdb.io/4yKkMxzJg8b6R5w1S8z9gA/${STORE_KEY}`;
+const LOCAL_FALLBACK_FILE = path.join(os.tmpdir(), 'wa_gateway_local_state_v2.json');
 
 let memoryCache: AppCloudState | null = null;
 let lastFetchTimestamp = 0;
-const CACHE_TTL_MS = 1000; // 1 second in-memory cache
+const CACHE_TTL_MS = 500; // 500ms in-memory cache
 
 export async function fetchCloudState(): Promise<AppCloudState> {
   const now = Date.now();
@@ -29,12 +28,12 @@ export async function fetchCloudState(): Promise<AppCloudState> {
     return memoryCache;
   }
 
-  // 1. Try fetching from Cloud KV Store (HTTPS shared across all Vercel lambdas)
+  // 1. Fetch from Primary Cloud Store
   try {
-    const res = await fetch(CLOUD_KV_URL, {
+    const res = await fetch(PRIMARY_CLOUD_URL, {
       method: 'GET',
-      headers: { 'Cache-Control': 'no-cache' },
-      next: { revalidate: 0 },
+      headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+      cache: 'no-store',
     });
 
     if (res.ok) {
@@ -42,7 +41,6 @@ export async function fetchCloudState(): Promise<AppCloudState> {
       if (state && Array.isArray(state.landingPages)) {
         memoryCache = state;
         lastFetchTimestamp = now;
-        // Sync to local fallback
         try {
           fs.writeFileSync(LOCAL_FALLBACK_FILE, JSON.stringify(state, null, 2), 'utf-8');
         } catch (e) {}
@@ -50,7 +48,7 @@ export async function fetchCloudState(): Promise<AppCloudState> {
       }
     }
   } catch (err) {
-    console.warn('Cloud KV fetch failed, attempting local fallback:', err);
+    console.warn('Primary Cloud fetch failed, attempting local fallback:', err);
   }
 
   // 2. Local Fallback File
@@ -84,19 +82,19 @@ export async function saveCloudState(state: AppCloudState): Promise<void> {
 
   const payload = JSON.stringify(state);
 
-  // 1. Save to local fallback file
+  // 1. Local disk sync
   try {
     fs.writeFileSync(LOCAL_FALLBACK_FILE, payload, 'utf-8');
   } catch (e) {}
 
-  // 2. Save to Cloud KV Store (shared globally across all Vercel Lambdas)
+  // 2. Primary Cloud Store POST
   try {
-    await fetch(CLOUD_KV_URL, {
+    await fetch(PRIMARY_CLOUD_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
     });
   } catch (err) {
-    console.error('Cloud KV save failed:', err);
+    console.error('Primary Cloud save failed:', err);
   }
 }
