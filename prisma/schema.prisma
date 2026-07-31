@@ -1,0 +1,93 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  role         String     @default("ADMIN")
+  isSuspended  Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  workspace    Workspace?
+}
+
+model Workspace {
+  id              String        @id @default(cuid())
+  userId          String        @unique
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name            String
+  logoUrl         String?
+  faviconUrl      String?
+  primaryColor    String        @default("#0f172a")
+  buttonColor     String        @default("#25D366")
+  supportEmail    String?
+  defaultWhatsapp String?
+  defaultPixelId  String?
+  defaultMessage  String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  landingPages    LandingPage[]
+  domains         Domain[]
+  subscription    Subscription?
+}
+
+model Domain {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  domainName  String    @unique
+  isPrimary   Boolean   @default(false)
+  status      String    @default("PENDING")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Subscription {
+  id             String    @id @default(cuid())
+  workspaceId    String    @unique
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  planName       String    @default("Unlimited")
+  price          Float     @default(500.0)
+  currency       String    @default("USD")
+  billingType    String    @default("One Time")
+  status         String    @default("ACTIVE")
+  gateway        String    @default("MANUAL")
+  activationDate DateTime  @default(now())
+  expiryDate     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model LandingPage {
+  id               String    @id @default(cuid())
+  workspaceId      String
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name             String
+  slug             String    @unique
+  companyName      String
+  logoUrl          String?
+  mediaUrl         String?
+  mediaType        String    @default("IMAGE")
+  mediaWidth       String    @default("100%")
+  mediaHeight      String    @default("260px")
+  borderRadius     String    @default("16px")
+  shadow           String    @default("lg")
+  objectFit        String    @default("cover")
+  mediaPosition    String    @default("center")
+  whatsappNumber   String
+  prefilledMessage String?
+  buttonText       String    @default("Continue to WhatsApp")
+  metaPixelId      String?
+  status           String    @default("ACTIVE")
+  viewsCount       Int       @default(0)
+  clicksCount      Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
