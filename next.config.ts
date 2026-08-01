@@ -7,8 +7,13 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '50mb',
+    },
+  },
   outputFileTracingIncludes: {
-    '/**': ['./prisma/dev.db', './dev.db'],
+    '/**': ['./prisma/dev.db', './dev.db', './data/**/*'],
   },
   images: {
     remotePatterns: [

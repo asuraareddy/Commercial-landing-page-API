@@ -12,7 +12,7 @@ export const supabase = createClient(
 export const BUCKET_NAME = process.env.SUPABASE_STORAGE_BUCKET || 'wa-media';
 
 /**
- * Upload file buffer or ArrayBuffer to Supabase Storage with cache-busting timestamp.
+ * Upload file buffer or ArrayBuffer to persistent storage (Supabase Storage or local /api/upload).
  */
 export async function uploadMediaToSupabase(
   fileBuffer: Buffer | ArrayBuffer,
@@ -23,36 +23,54 @@ export async function uploadMediaToSupabase(
   const timestamp = Date.now();
   const randomSuffix = Math.random().toString(36).substring(2, 7);
 
-  // Extract extension
   const extMatch = fileName.match(/\.([a-zA-Z0-9]+)$/);
   const ext = extMatch ? `.${extMatch[1].toLowerCase()}` : '';
   const baseName = fileName.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
   const filePath = `${folder}/${folder.slice(0, -1)}_${timestamp}_${randomSuffix}_${baseName}${ext}`;
 
-  // If Supabase environment is not configured, convert buffer to Data URL fallback
-  if (!supabaseUrl || supabaseUrl.includes('placeholder')) {
-    const base64 = Buffer.from(fileBuffer as any).toString('base64');
-    const mime = contentType || (fileName.endsWith('.mp4') ? 'video/mp4' : 'image/png');
-    return `data:${mime};base64,${base64}`;
+  // 1. If Supabase environment is validly configured
+  if (supabaseUrl && !supabaseUrl.includes('placeholder')) {
+    try {
+      const { error: uploadError } = await supabase.storage
+        .from(BUCKET_NAME)
+        .upload(filePath, fileBuffer, {
+          contentType: contentType || 'application/octet-stream',
+          upsert: true,
+        });
+
+      if (!uploadError) {
+        const { data: publicUrlData } = supabase.storage
+          .from(BUCKET_NAME)
+          .getPublicUrl(filePath);
+        return `${publicUrlData.publicUrl}?v=${timestamp}`;
+      }
+    } catch (err) {
+      console.warn('Supabase storage error, attempting local API upload:', err);
+    }
   }
 
-  // Upload to Supabase Storage
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET_NAME)
-    .upload(filePath, fileBuffer, {
-      contentType: contentType || 'application/octet-stream',
-      upsert: true,
+  // 2. Local Persistent File Upload via /api/upload Endpoint
+  try {
+    const formData = new FormData();
+    const blob = new Blob([fileBuffer], { type: contentType || 'application/octet-stream' });
+    formData.append('file', blob, fileName);
+
+    const baseUrl = typeof window !== 'undefined' ? '' : (process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000');
+    const res = await fetch(`${baseUrl}/api/upload`, {
+      method: 'POST',
+      body: formData,
     });
 
-  if (uploadError) {
-    console.error('Supabase upload error:', uploadError);
-    throw new Error(`Failed to upload media: ${uploadError.message}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.url) return data.url;
+    }
+  } catch (err) {
+    console.warn('Local API upload fallback failed:', err);
   }
 
-  const { data: publicUrlData } = supabase.storage
-    .from(BUCKET_NAME)
-    .getPublicUrl(filePath);
-
-  // Append timestamp query parameter to bust browser cache
-  return `${publicUrlData.publicUrl}?v=${timestamp}`;
+  // 3. Fallback Data URL
+  const base64 = Buffer.from(fileBuffer as any).toString('base64');
+  const mime = contentType || 'image/png';
+  return `data:${mime};base64,${base64}`;
 }

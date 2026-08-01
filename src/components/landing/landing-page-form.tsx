@@ -71,7 +71,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const maxSize = type === 'logo' ? 10 * 1024 * 1024 : 100 * 1024 * 1024; // 10MB logo, 100MB media
+    const maxSize = type === 'logo' ? 10 * 1024 * 1024 : 100 * 1024 * 1024;
     if (file.size > maxSize) {
       toast(`File size exceeds limit (${type === 'logo' ? '10MB' : '100MB'})`, 'error');
       return;
@@ -83,9 +83,20 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
     toast(type === 'logo' ? 'Uploading logo...' : 'Uploading media...');
 
     try {
-      const buffer = await file.arrayBuffer();
-      const folder = type === 'logo' ? 'logos' : 'media';
-      const publicUrl = await uploadMediaToSupabase(buffer, file.name, file.type, folder);
+      const uploadFormData = new FormData();
+      uploadFormData.append('file', file);
+
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: uploadFormData,
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to upload file to server');
+      }
+
+      const data = await res.json();
+      const publicUrl = data.url;
 
       if (type === 'logo') {
         handleChange('logoUrl', publicUrl);
