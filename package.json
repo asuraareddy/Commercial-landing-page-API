@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/prepare-env.js && prisma generate && prisma migrate deploy && next build",
+    "build": "node scripts/prepare-env.js && prisma generate && next build",
     "start": "next start",
     "lint": "next lint",
     "seed": "npx tsx prisma/seed.ts",
