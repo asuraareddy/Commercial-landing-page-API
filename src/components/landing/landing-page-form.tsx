@@ -83,20 +83,41 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
     toast(type === 'logo' ? 'Uploading logo...' : 'Uploading media...');
 
     try {
-      const uploadFormData = new FormData();
-      uploadFormData.append('file', file);
+      let publicUrl = '';
 
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: uploadFormData,
-      });
+      // 1. Try server upload API first
+      try {
+        const uploadFormData = new FormData();
+        uploadFormData.append('file', file);
 
-      if (!res.ok) {
-        throw new Error('Failed to upload file to server');
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          body: uploadFormData,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.url) publicUrl = data.url;
+        }
+      } catch (err) {
+        console.warn('API upload error, using local FileReader fallback:', err);
       }
 
-      const data = await res.json();
-      const publicUrl = data.url;
+      // 2. Client-side FileReader fallback if server upload API fails
+      if (!publicUrl) {
+        publicUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            if (event.target?.result) {
+              resolve(event.target.result as string);
+            } else {
+              reject(new Error('Could not read file'));
+            }
+          };
+          reader.onerror = () => reject(new Error('Could not read file'));
+          reader.readAsDataURL(file);
+        });
+      }
 
       if (type === 'logo') {
         handleChange('logoUrl', publicUrl);

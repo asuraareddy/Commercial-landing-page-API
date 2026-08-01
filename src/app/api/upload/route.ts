@@ -14,21 +14,29 @@ export async function POST(request: Request) {
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    const uploadsDir = path.join(process.cwd(), "public", "uploads");
-    await fs.mkdir(uploadsDir, { recursive: true });
+    try {
+      const uploadsDir = path.join(process.cwd(), "public", "uploads");
+      await fs.mkdir(uploadsDir, { recursive: true });
 
-    // Generate safe filename
-    const ext = path.extname(file.name) || ".png";
-    const sanitizeName = path.basename(file.name, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
-    const filename = `${sanitizeName}_${Date.now()}${ext}`;
-    const filePath = path.join(uploadsDir, filename);
+      const ext = path.extname(file.name) || ".png";
+      const sanitizeName = path.basename(file.name, ext).replace(/[^a-zA-Z0-9_-]/g, "_");
+      const filename = `${sanitizeName}_${Date.now()}${ext}`;
+      const filePath = path.join(uploadsDir, filename);
 
-    await fs.writeFile(filePath, buffer);
+      await fs.writeFile(filePath, buffer);
 
-    const publicUrl = `/uploads/${filename}`;
-    return NextResponse.json({ success: true, url: publicUrl });
+      const publicUrl = `/uploads/${filename}`;
+      return NextResponse.json({ success: true, url: publicUrl });
+    } catch (fsErr) {
+      // Serverless / Read-Only disk fallback: Convert to Data URL
+      console.warn("Read-only filesystem detected, serving file via Data URL fallback");
+      const mime = file.type || "image/png";
+      const base64 = buffer.toString("base64");
+      const dataUrl = `data:${mime};base64,${base64}`;
+      return NextResponse.json({ success: true, url: dataUrl });
+    }
   } catch (error) {
     console.error("Upload error:", error);
-    return NextResponse.json({ error: "Failed to upload image" }, { status: 500 });
+    return NextResponse.json({ error: "Failed to process image upload" }, { status: 500 });
   }
 }
