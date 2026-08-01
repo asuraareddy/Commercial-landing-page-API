@@ -31,6 +31,7 @@ export type MediaType = (typeof MediaType)[keyof typeof MediaType];
 export const PageStatus = {
   ACTIVE: 'ACTIVE',
   INACTIVE: 'INACTIVE',
+  ARCHIVED: 'ARCHIVED',
 } as const;
 
 export type PageStatus = (typeof PageStatus)[keyof typeof PageStatus];

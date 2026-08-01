@@ -69,6 +69,7 @@ model LandingPage {
   id               String    @id @default(cuid())
   workspaceId      String
   workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userEmail        String?
   name             String
   slug             String    @unique
   companyName      String
@@ -88,6 +89,7 @@ model LandingPage {
   status           String    @default("ACTIVE")
   viewsCount       Int       @default(0)
   clicksCount      Int       @default(0)
+  archivedAt       DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 }

@@ -2,18 +2,21 @@
 
 import { db } from '@/lib/db';
 import { requireAuth } from '@/lib/auth';
-import { UserRole, SubscriptionStatus, DomainStatus } from '@/lib/types';
+import { UserRole, SubscriptionStatus, DomainStatus, PageStatus } from '@/lib/types';
 import bcrypt from 'bcryptjs';
-import { revalidatePath } from 'next/cache';
+function safeRevalidatePath(path: string) {
+  try {
+    revalidatePath(path);
+  } catch (e) {}
+}
 import { fetchCloudState, saveCloudState } from '@/lib/cloud-store';
 
 export async function getSuperAdminStatsAction() {
   await requireAuth([UserRole.SUPER_ADMIN]);
-  const state = await fetchCloudState();
 
-  const totalAdmins = state.admins.length > 0 ? state.admins.length : 1;
-  const totalLandingPages = state.landingPages.length;
-  const totalDomains = state.domains.length;
+  const totalAdmins = (await db.user.count({ where: { role: UserRole.ADMIN } })) || 1;
+  const totalLandingPages = await db.landingPage.count();
+  const totalDomains = await db.domain.count();
 
   return {
     totalAdmins,
@@ -48,8 +51,35 @@ export async function getAdminsAction() {
 
 export async function getAllLandingPagesForSuperAdminAction() {
   await requireAuth([UserRole.SUPER_ADMIN]);
-  const state = await fetchCloudState();
-  return state.landingPages.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const pages = await db.landingPage.findMany({
+    orderBy: { createdAt: 'desc' },
+    include: { workspace: true },
+  });
+
+  return pages;
+}
+
+export async function restoreLandingPageAction(id: string) {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  const page = await db.landingPage.findUnique({ where: { id } });
+  if (!page) return { success: false, error: 'Landing page not found' };
+
+  await db.landingPage.update({
+    where: { id },
+    data: {
+      status: PageStatus.INACTIVE,
+      archivedAt: null,
+      updatedAt: new Date(),
+    },
+  });
+
+  safeRevalidatePath('/super-admin/landing-pages');
+  safeRevalidatePath('/super-admin');
+  safeRevalidatePath('/dashboard/landing-pages');
+  safeRevalidatePath('/dashboard');
+
+  return { success: true };
 }
 
 export async function createAdminAction(formData: FormData) {
@@ -122,8 +152,8 @@ export async function createAdminAction(formData: FormData) {
   state.admins.unshift(newAdminObj);
   await saveCloudState(state);
 
-  revalidatePath('/super-admin/admins');
-  revalidatePath('/super-admin');
+  safeRevalidatePath('/super-admin/admins');
+  safeRevalidatePath('/super-admin');
   return { success: true, user: newAdminObj };
 }
 
@@ -147,7 +177,7 @@ export async function toggleSuspendAdminAction(userId: string) {
     }
   } catch (e) {}
 
-  revalidatePath('/super-admin/admins');
+  safeRevalidatePath('/super-admin/admins');
   return { success: true };
 }
 
@@ -188,8 +218,8 @@ export async function deleteAdminAction(userId: string) {
     await db.user.delete({ where: { id: userId } });
   } catch (e) {}
 
-  revalidatePath('/super-admin/admins');
-  revalidatePath('/super-admin');
+  safeRevalidatePath('/super-admin/admins');
+  safeRevalidatePath('/super-admin');
   return { success: true };
 }
 
@@ -225,8 +255,8 @@ export async function createGlobalDomainAction(formData: FormData) {
   state.domains.unshift(newDomainObj);
   await saveCloudState(state);
 
-  revalidatePath('/super-admin/domains');
-  revalidatePath('/super-admin');
+  safeRevalidatePath('/super-admin/domains');
+  safeRevalidatePath('/super-admin');
   return { success: true, domain: newDomainObj };
 }
 
@@ -240,7 +270,7 @@ export async function toggleGlobalDomainStatusAction(id: string) {
     await saveCloudState(state);
   }
 
-  revalidatePath('/super-admin/domains');
+  safeRevalidatePath('/super-admin/domains');
   return { success: true };
 }
 
@@ -251,36 +281,39 @@ export async function deleteGlobalDomainAction(id: string) {
   state.domains = state.domains.filter((d) => d.id !== id);
   await saveCloudState(state);
 
-  revalidatePath('/super-admin/domains');
+  safeRevalidatePath('/super-admin/domains');
   return { success: true };
 }
 
 export async function getAllWorkspacesAction() {
   await requireAuth([UserRole.SUPER_ADMIN]);
-  const state = await fetchCloudState();
-  return state.admins.map((a) => ({
-    id: a.workspace?.id || `ws_${a.id}`,
-    name: a.workspace?.name || 'Default Workspace',
-    user: { email: a.email },
-    landingPages: state.landingPages.filter((p) => p.workspaceId === (a.workspace?.id || `ws_${a.id}`)),
-    subscription: a.workspace?.subscription || { status: SubscriptionStatus.ACTIVE },
-    createdAt: a.createdAt,
+  const dbWorkspaces = await db.workspace.findMany({
+    include: {
+      user: true,
+      landingPages: true,
+      subscription: true,
+    },
+  });
+
+  return dbWorkspaces.map((ws) => ({
+    id: ws.id,
+    name: ws.name,
+    user: { email: ws.user?.email || 'N/A' },
+    landingPages: ws.landingPages || [],
+    subscription: ws.subscription || { status: SubscriptionStatus.ACTIVE },
+    createdAt: ws.createdAt,
   }));
 }
 
 export async function updateSubscriptionStatusAction(workspaceId: string, status: SubscriptionStatus) {
   await requireAuth([UserRole.SUPER_ADMIN]);
-  const state = await fetchCloudState();
-  const idx = state.admins.findIndex((a) => (a.workspace?.id || `ws_${a.id}`) === workspaceId);
-  if (idx !== -1) {
-    if (state.admins[idx].workspace) {
-      if (!state.admins[idx].workspace.subscription) {
-        state.admins[idx].workspace.subscription = {};
-      }
-      state.admins[idx].workspace.subscription.status = status;
-      await saveCloudState(state);
-    }
-  }
+  try {
+    await db.subscription.update({
+      where: { workspaceId },
+      data: { status },
+    });
+  } catch (e) {}
+
   revalidatePath('/super-admin/workspaces');
   return { success: true };
 }
