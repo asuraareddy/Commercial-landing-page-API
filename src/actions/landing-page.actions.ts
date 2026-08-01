@@ -5,14 +5,107 @@ import { requireAuth } from '@/lib/auth';
 import { UserRole, PageStatus, MediaType } from '@/lib/types';
 import { revalidatePath } from 'next/cache';
 import { slugify } from '@/lib/utils';
+import fs from 'fs';
+import path from 'path';
 
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+const PERSISTENT_STORE_PATH = path.join(process.cwd(), 'data', 'landing_pages_store.json');
 
-function safeRevalidatePath(path: string) {
+function safeRevalidatePath(pathStr: string) {
   try {
-    revalidatePath(path);
+    revalidatePath(pathStr);
   } catch (e) {
     // Non-blocking outside HTTP request scope
+  }
+}
+
+/**
+ * Persistent backup store file read/write for fail-safe zero-data-loss durability.
+ */
+function readPersistentBackup(): any[] {
+  try {
+    if (fs.existsSync(PERSISTENT_STORE_PATH)) {
+      const data = fs.readFileSync(PERSISTENT_STORE_PATH, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {}
+  return [];
+}
+
+async function writePersistentBackup() {
+  try {
+    const allPages = await db.landingPage.findMany();
+    const dir = path.dirname(PERSISTENT_STORE_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PERSISTENT_STORE_PATH, JSON.stringify(allPages, null, 2), 'utf-8');
+  } catch (e) {
+    console.warn('Failed to write persistent landing page backup:', e);
+  }
+}
+
+/**
+ * Automatically restores missing landing pages from backup into Prisma DB if needed.
+ */
+async function syncBackupIntoDatabase() {
+  try {
+    const backupPages = readPersistentBackup();
+    if (backupPages.length === 0) return;
+
+    for (const p of backupPages) {
+      const dbPage = await db.landingPage.findUnique({ where: { id: p.id } });
+      if (!dbPage) {
+        // Ensure workspace exists before inserting orphan page
+        let wsId = p.workspaceId;
+        const wsExists = await db.workspace.findUnique({ where: { id: wsId } });
+        if (!wsExists) {
+          const firstWs = await db.workspace.findFirst();
+          if (firstWs) {
+            wsId = firstWs.id;
+          } else {
+            const newWs = await db.workspace.create({
+              data: {
+                id: wsId,
+                userId: `usr_backup_${Date.now()}`,
+                name: 'Default Workspace',
+              },
+            });
+            wsId = newWs.id;
+          }
+        }
+
+        await db.landingPage.create({
+          data: {
+            id: p.id,
+            workspaceId: wsId,
+            userEmail: p.userEmail || null,
+            name: p.name,
+            slug: p.slug,
+            companyName: p.companyName || 'Company Name',
+            logoUrl: p.logoUrl || null,
+            mediaUrl: p.mediaUrl || null,
+            mediaType: p.mediaType || MediaType.IMAGE,
+            mediaWidth: p.mediaWidth || '100%',
+            mediaHeight: p.mediaHeight || '260px',
+            borderRadius: p.borderRadius || '16px',
+            shadow: p.shadow || 'lg',
+            objectFit: p.objectFit || 'cover',
+            mediaPosition: p.mediaPosition || 'center',
+            whatsappNumber: p.whatsappNumber || '',
+            prefilledMessage: p.prefilledMessage || null,
+            buttonText: p.buttonText || 'Continue to WhatsApp',
+            metaPixelId: p.metaPixelId || null,
+            status: p.status || PageStatus.ACTIVE,
+            viewsCount: p.viewsCount || 0,
+            clicksCount: p.clicksCount || 0,
+            createdAt: p.createdAt ? new Date(p.createdAt) : new Date(),
+            updatedAt: p.updatedAt ? new Date(p.updatedAt) : new Date(),
+          },
+        });
+      }
+    }
+  } catch (e) {
+    console.warn('Backup sync into DB warning:', e);
   }
 }
 
@@ -51,7 +144,6 @@ async function ensureWorkspaceId(userId: string, email?: string, userWorkspaceId
   const userWs = await db.workspace.findUnique({ where: { userId } });
   if (userWs) return userWs.id;
 
-  // Create workspace for user if missing
   const newWs = await db.workspace.create({
     data: {
       userId,
@@ -100,6 +192,7 @@ export async function getAdminDashboardStatsAction() {
 
 export async function getLandingPagesAction() {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
+  await syncBackupIntoDatabase();
   await apply90DayArchivalPolicy();
 
   const email = session.email?.toLowerCase().trim();
@@ -130,6 +223,7 @@ export async function getLandingPagesAction() {
 
 export async function getLandingPageByIdAction(id: string) {
   const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
+  await syncBackupIntoDatabase();
   const page = await db.landingPage.findUnique({ where: { id } });
 
   if (!page) return null;
@@ -186,6 +280,8 @@ export async function createLandingPageAction(data: any) {
       clicksCount: 0,
     },
   });
+
+  await writePersistentBackup();
 
   safeRevalidatePath('/dashboard/landing-pages');
   safeRevalidatePath('/dashboard');
@@ -248,6 +344,8 @@ export async function updateLandingPageAction(id: string, data: any) {
     },
   });
 
+  await writePersistentBackup();
+
   safeRevalidatePath('/dashboard/landing-pages');
   safeRevalidatePath('/dashboard');
   safeRevalidatePath('/super-admin/landing-pages');
@@ -279,6 +377,7 @@ export async function deleteLandingPageAction(id: string) {
   }
 
   await db.landingPage.delete({ where: { id } });
+  await writePersistentBackup();
 
   safeRevalidatePath('/dashboard/landing-pages');
   safeRevalidatePath('/dashboard');
@@ -331,6 +430,8 @@ export async function duplicateLandingPageAction(id: string) {
     },
   });
 
+  await writePersistentBackup();
+
   safeRevalidatePath('/dashboard/landing-pages');
   safeRevalidatePath('/dashboard');
   safeRevalidatePath('/super-admin/landing-pages');
@@ -363,6 +464,8 @@ export async function toggleLandingPageStatusAction(id: string) {
       archivedAt: null,
     },
   });
+
+  await writePersistentBackup();
 
   safeRevalidatePath('/dashboard/landing-pages');
   safeRevalidatePath('/dashboard');
@@ -402,6 +505,8 @@ export async function trackWhatsAppClickAction(slug: string) {
 export async function getPublicLandingPageBySlug(slug: string) {
   const cleanSlug = slug ? slug.toLowerCase().trim() : '';
   if (!cleanSlug) return null;
+
+  await syncBackupIntoDatabase();
 
   const page = await db.landingPage.findFirst({
     where: {
