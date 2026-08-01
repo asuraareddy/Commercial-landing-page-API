@@ -68,7 +68,7 @@ export default function SuperAdminDomainsPage() {
   const handleToggleStatus = async (id: string) => {
     const res = await toggleGlobalDomainStatusAction(id);
     if (res.success) {
-      toast(`Domain status updated to ${res.status}`);
+      toast('Domain status updated');
       fetchDomains();
     } else {
       toast(res.error || 'Failed to toggle status', 'error');

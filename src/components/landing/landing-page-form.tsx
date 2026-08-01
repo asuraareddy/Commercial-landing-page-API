@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useToast } from '@/components/ui/toast';
 import { createLandingPageAction, updateLandingPageAction } from '@/actions/landing-page.actions';
-import { uploadMediaToSupabase } from '@/lib/supabase';
+import { supabaseBrowser, BUCKET_NAME } from '@/lib/supabase';
 import { LandingPageTemplate, LandingPageData } from '@/components/landing/landing-page-template';
 import { slugify } from '@/lib/utils';
 import {
@@ -83,41 +83,27 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
     toast(type === 'logo' ? 'Uploading logo...' : 'Uploading media...');
 
     try {
-      let publicUrl = '';
+      const folder = type === 'logo' ? 'logos' : 'media';
+      const timestamp = Date.now();
+      const randomSuffix = Math.random().toString(36).substring(2, 8);
+      const ext = file.name.match(/\.([a-zA-Z0-9]+)$/)?.[1]?.toLowerCase() || 'png';
+      const baseName = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40);
+      const filePath = `${folder}/${timestamp}_${randomSuffix}_${baseName}.${ext}`;
 
-      // 1. Try server upload API first
-      try {
-        const uploadFormData = new FormData();
-        uploadFormData.append('file', file);
-
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          body: uploadFormData,
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          if (data.url) publicUrl = data.url;
-        }
-      } catch (err) {
-        console.warn('API upload error, using local FileReader fallback:', err);
+      if (!supabaseBrowser) {
+        throw new Error('Storage is not configured. Please contact support.');
       }
 
-      // 2. Client-side FileReader fallback if server upload API fails
-      if (!publicUrl) {
-        publicUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            if (event.target?.result) {
-              resolve(event.target.result as string);
-            } else {
-              reject(new Error('Could not read file'));
-            }
-          };
-          reader.onerror = () => reject(new Error('Could not read file'));
-          reader.readAsDataURL(file);
-        });
+      const { error: uploadError } = await supabaseBrowser.storage
+        .from(BUCKET_NAME)
+        .upload(filePath, file, { contentType: file.type, upsert: true });
+
+      if (uploadError) {
+        throw new Error(`Upload failed: ${uploadError.message}`);
       }
+
+      const { data: urlData } = supabaseBrowser.storage.from(BUCKET_NAME).getPublicUrl(filePath);
+      const publicUrl = `${urlData.publicUrl}?v=${timestamp}`;
 
       if (type === 'logo') {
         handleChange('logoUrl', publicUrl);
@@ -140,17 +126,17 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!formData.name.trim()) {
+    if (!(formData.name || '').trim()) {
       toast('Internal page name is required', 'error');
       return;
     }
 
-    if (!formData.companyName.trim()) {
+    if (!(formData.companyName || '').trim()) {
       toast('Company name is required', 'error');
       return;
     }
 
-    if (!formData.whatsappNumber.trim()) {
+    if (!(formData.whatsappNumber || '').trim()) {
       toast('WhatsApp number is required', 'error');
       return;
     }

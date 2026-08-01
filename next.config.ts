@@ -9,11 +9,8 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     serverActions: {
-      bodySizeLimit: '50mb',
+      bodySizeLimit: '10mb',
     },
-  },
-  outputFileTracingIncludes: {
-    '/**': ['./prisma/dev.db', './dev.db', './data/**/*'],
   },
   images: {
     remotePatterns: [

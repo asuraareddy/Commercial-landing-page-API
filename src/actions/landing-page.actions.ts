@@ -5,144 +5,25 @@ import { requireAuth } from '@/lib/auth';
 import { UserRole, PageStatus, MediaType } from '@/lib/types';
 import { revalidatePath } from 'next/cache';
 import { slugify } from '@/lib/utils';
-import fs from 'fs';
-import path from 'path';
 
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
-const PERSISTENT_STORE_PATH = path.join(process.cwd(), 'data', 'landing_pages_store.json');
 
-function safeRevalidatePath(pathStr: string) {
-  try {
-    revalidatePath(pathStr);
-  } catch (e) {
-    // Non-blocking outside HTTP request scope
-  }
-}
+// ---------------------------------------------------------------------------
+// Internal: ensure admin has a workspace in the database
+// ---------------------------------------------------------------------------
 
-/**
- * Persistent backup store file read/write for fail-safe durability.
- */
-function readPersistentBackup(): any[] {
-  try {
-    if (fs.existsSync(PERSISTENT_STORE_PATH)) {
-      const data = fs.readFileSync(PERSISTENT_STORE_PATH, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch (e) {}
-  return [];
-}
-
-async function writePersistentBackup() {
-  try {
-    const allPages = await db.landingPage.findMany();
-    const dir = path.dirname(PERSISTENT_STORE_PATH);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(PERSISTENT_STORE_PATH, JSON.stringify(allPages, null, 2), 'utf-8');
-  } catch (e) {
-    console.warn('Failed to write persistent landing page backup:', e);
-  }
-}
-
-/**
- * Automatically restores missing landing pages from backup into Prisma DB if needed.
- */
-async function syncBackupIntoDatabase() {
-  try {
-    const backupPages = readPersistentBackup();
-    if (backupPages.length === 0) return;
-
-    for (const p of backupPages) {
-      const dbPage = await db.landingPage.findUnique({ where: { id: p.id } });
-      if (!dbPage) {
-        let wsId = p.workspaceId;
-        const wsExists = await db.workspace.findUnique({ where: { id: wsId } });
-        if (!wsExists) {
-          const firstWs = await db.workspace.findFirst();
-          if (firstWs) {
-            wsId = firstWs.id;
-          } else {
-            const newWs = await db.workspace.create({
-              data: {
-                id: wsId,
-                userId: `usr_backup_${Date.now()}`,
-                name: 'Default Workspace',
-              },
-            });
-            wsId = newWs.id;
-          }
-        }
-
-        await db.landingPage.create({
-          data: {
-            id: p.id,
-            workspaceId: wsId,
-            userEmail: p.userEmail || null,
-            name: p.name,
-            slug: p.slug,
-            companyName: p.companyName || 'Company Name',
-            logoUrl: p.logoUrl || null,
-            mediaUrl: p.mediaUrl || null,
-            mediaType: p.mediaType || MediaType.IMAGE,
-            mediaWidth: p.mediaWidth || '100%',
-            mediaHeight: p.mediaHeight || '260px',
-            borderRadius: p.borderRadius || '16px',
-            shadow: p.shadow || 'lg',
-            objectFit: p.objectFit || 'cover',
-            mediaPosition: p.mediaPosition || 'center',
-            whatsappNumber: p.whatsappNumber || '',
-            prefilledMessage: p.prefilledMessage || null,
-            buttonText: p.buttonText || 'Continue to WhatsApp',
-            metaPixelId: p.metaPixelId || null,
-            status: p.status || PageStatus.ACTIVE,
-            viewsCount: p.viewsCount || 0,
-            clicksCount: p.clicksCount || 0,
-            createdAt: p.createdAt ? new Date(p.createdAt) : new Date(),
-            updatedAt: p.updatedAt ? new Date(p.updatedAt) : new Date(),
-          },
-        });
-      }
-    }
-  } catch (e) {
-    console.warn('Backup sync into DB warning:', e);
-  }
-}
-
-/**
- * Lifecycle policy: Automatically archive inactive landing pages that have not
- * been updated for at least 90 consecutive days.
- * Active pages remain active indefinitely.
- */
-async function apply90DayArchivalPolicy() {
-  try {
-    const ninetyDaysAgo = new Date(Date.now() - NINETY_DAYS_MS);
-    await db.landingPage.updateMany({
-      where: {
-        status: PageStatus.INACTIVE,
-        updatedAt: { lt: ninetyDaysAgo },
-      },
-      data: {
-        status: PageStatus.ARCHIVED,
-        archivedAt: new Date(),
-      },
-    });
-  } catch (error) {
-    console.error('Error applying 90-day archival policy:', error);
-  }
-}
-
-/**
- * Ensure user has a valid workspace record in DB.
- */
-async function ensureWorkspaceId(userId: string, email?: string, userWorkspaceId?: string): Promise<string> {
-  if (userWorkspaceId) {
-    const existingWs = await db.workspace.findUnique({ where: { id: userWorkspaceId } });
-    if (existingWs) return existingWs.id;
+async function ensureWorkspace(userId: string, email?: string | null, sessionWorkspaceId?: string | null): Promise<string> {
+  // 1. Try session workspace first
+  if (sessionWorkspaceId) {
+    const ws = await db.workspace.findUnique({ where: { id: sessionWorkspaceId } });
+    if (ws) return ws.id;
   }
 
-  const userWs = await db.workspace.findUnique({ where: { userId } });
-  if (userWs) return userWs.id;
+  // 2. Try find by userId
+  const ws = await db.workspace.findUnique({ where: { userId } });
+  if (ws) return ws.id;
 
+  // 3. Create a new workspace for this user
   const newWs = await db.workspace.create({
     data: {
       userId,
@@ -162,6 +43,32 @@ async function ensureWorkspaceId(userId: string, email?: string, userWorkspaceId
 
   return newWs.id;
 }
+
+// ---------------------------------------------------------------------------
+// Internal: 90-day archival policy (inactive pages only)
+// ---------------------------------------------------------------------------
+
+async function apply90DayArchivalPolicy(): Promise<void> {
+  try {
+    const ninetyDaysAgo = new Date(Date.now() - NINETY_DAYS_MS);
+    await db.landingPage.updateMany({
+      where: {
+        status: PageStatus.INACTIVE,
+        updatedAt: { lt: ninetyDaysAgo },
+      },
+      data: {
+        status: PageStatus.ARCHIVED,
+        archivedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error('apply90DayArchivalPolicy error:', error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard Stats
+// ---------------------------------------------------------------------------
 
 export async function getAdminDashboardStatsAction() {
   try {
@@ -188,59 +95,62 @@ export async function getAdminDashboardStatsAction() {
       },
       primaryDomain: 'go.wagateway.com',
     };
-  } catch (err: any) {
+  } catch {
     return {
       totalPages: 0,
       activePages: 0,
       inactivePages: 0,
       totalViews: 0,
       totalClicks: 0,
-      subscription: { planName: 'Unlimited', price: 500.0, currency: 'USD', billingType: 'One Time', status: 'ACTIVE' },
+      subscription: { planName: 'Unlimited SaaS License', price: 500.0, currency: 'USD', billingType: 'One Time', status: 'ACTIVE' },
       primaryDomain: 'go.wagateway.com',
     };
   }
 }
 
+// ---------------------------------------------------------------------------
+// List (Admin sees own workspace; Super Admin sees all)
+// ---------------------------------------------------------------------------
+
 export async function getLandingPagesAction() {
   try {
     const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-    await syncBackupIntoDatabase();
     await apply90DayArchivalPolicy();
 
-    const email = session.email?.toLowerCase().trim();
-    let pages: any[] = [];
-
     if (session.role === UserRole.SUPER_ADMIN) {
-      pages = await db.landingPage.findMany({
-        where: {
-          status: { not: PageStatus.ARCHIVED },
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-    } else {
-      pages = await db.landingPage.findMany({
-        where: {
-          status: { not: PageStatus.ARCHIVED },
-          OR: [
-            session.workspaceId ? { workspaceId: session.workspaceId } : {},
-            email ? { userEmail: email } : {},
-          ],
-        },
+      return db.landingPage.findMany({
+        where: { status: { not: PageStatus.ARCHIVED } },
         orderBy: { createdAt: 'desc' },
       });
     }
 
-    return pages;
-  } catch (err: any) {
-    console.error('getLandingPagesAction error:', err);
+    const email = session.email?.toLowerCase().trim();
+    const workspaceId = session.workspaceId;
+
+    const orConditions: any[] = [];
+    if (workspaceId) orConditions.push({ workspaceId });
+    if (email) orConditions.push({ userEmail: email });
+
+    return db.landingPage.findMany({
+      where: {
+        status: { not: PageStatus.ARCHIVED },
+        OR: orConditions.length > 0 ? orConditions : undefined,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  } catch (error: any) {
+    console.error('getLandingPagesAction error:', error);
     return [];
   }
 }
 
+// ---------------------------------------------------------------------------
+// Get Single Page by ID
+// ---------------------------------------------------------------------------
+
 export async function getLandingPageByIdAction(id: string) {
   try {
     const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-    await syncBackupIntoDatabase();
     const page = await db.landingPage.findUnique({ where: { id } });
 
     if (!page) return null;
@@ -255,28 +165,32 @@ export async function getLandingPageByIdAction(id: string) {
     }
 
     return page;
-  } catch (err: any) {
+  } catch {
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Create
+// ---------------------------------------------------------------------------
 
 export async function createLandingPageAction(data: any) {
   try {
     const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
     const userEmail = session.email?.toLowerCase().trim();
-    const workspaceId = await ensureWorkspaceId(session.id, userEmail, session.workspaceId);
+    const workspaceId = await ensureWorkspace(session.id, userEmail, session.workspaceId);
 
     const formattedSlug = slugify(data.slug || data.name);
-
-    const existingSlug = await db.landingPage.findUnique({
-      where: { slug: formattedSlug },
-    });
-
-    if (existingSlug) {
-      return { success: false, error: `Slug "${formattedSlug}" is already taken. Please choose another.` };
+    if (!formattedSlug) {
+      return { success: false, error: 'Page name is required to generate a URL slug.' };
     }
 
-    const newLandingPage = await db.landingPage.create({
+    const existingSlug = await db.landingPage.findUnique({ where: { slug: formattedSlug } });
+    if (existingSlug) {
+      return { success: false, error: `Slug "${formattedSlug}" is already taken. Please choose another name.` };
+    }
+
+    const newPage = await db.landingPage.create({
       data: {
         workspaceId,
         userEmail,
@@ -302,23 +216,20 @@ export async function createLandingPageAction(data: any) {
       },
     });
 
-    try {
-      await writePersistentBackup();
-    } catch (e) {}
+    revalidatePath('/dashboard/landing-pages');
+    revalidatePath('/dashboard');
+    revalidatePath(`/p/${formattedSlug}`);
 
-    safeRevalidatePath('/dashboard/landing-pages');
-    safeRevalidatePath('/dashboard');
-    safeRevalidatePath('/super-admin/landing-pages');
-    safeRevalidatePath('/super-admin');
-    safeRevalidatePath(`/p/${formattedSlug}`);
-    safeRevalidatePath(`/${formattedSlug}`);
-
-    return { success: true, page: newLandingPage };
+    return { success: true, page: newPage };
   } catch (error: any) {
     console.error('createLandingPageAction error:', error);
     return { success: false, error: error.message || 'Failed to create landing page. Please try again.' };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Update
+// ---------------------------------------------------------------------------
 
 export async function updateLandingPageAction(id: string, data: any) {
   try {
@@ -350,7 +261,6 @@ export async function updateLandingPageAction(id: string, data: any) {
     const updatedPage = await db.landingPage.update({
       where: { id },
       data: {
-        userEmail: existing.userEmail || session.email?.toLowerCase().trim(),
         name: data.name,
         slug: formattedSlug,
         companyName: data.companyName,
@@ -372,20 +282,12 @@ export async function updateLandingPageAction(id: string, data: any) {
       },
     });
 
-    try {
-      await writePersistentBackup();
-    } catch (e) {}
-
-    safeRevalidatePath('/dashboard/landing-pages');
-    safeRevalidatePath('/dashboard');
-    safeRevalidatePath('/super-admin/landing-pages');
-    safeRevalidatePath('/super-admin');
-    safeRevalidatePath(`/dashboard/landing-pages/${id}/edit`);
-    safeRevalidatePath(`/p/${formattedSlug}`);
-    safeRevalidatePath(`/${formattedSlug}`);
+    revalidatePath('/dashboard/landing-pages');
+    revalidatePath('/dashboard');
+    revalidatePath(`/dashboard/landing-pages/${id}/edit`);
+    revalidatePath(`/p/${formattedSlug}`);
     if (existing.slug !== formattedSlug) {
-      safeRevalidatePath(`/p/${existing.slug}`);
-      safeRevalidatePath(`/${existing.slug}`);
+      revalidatePath(`/p/${existing.slug}`);
     }
 
     return { success: true, page: updatedPage };
@@ -394,6 +296,10 @@ export async function updateLandingPageAction(id: string, data: any) {
     return { success: false, error: error.message || 'Failed to update landing page.' };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
 
 export async function deleteLandingPageAction(id: string) {
   try {
@@ -412,21 +318,20 @@ export async function deleteLandingPageAction(id: string) {
     }
 
     await db.landingPage.delete({ where: { id } });
-    try {
-      await writePersistentBackup();
-    } catch (e) {}
 
-    safeRevalidatePath('/dashboard/landing-pages');
-    safeRevalidatePath('/dashboard');
-    safeRevalidatePath('/super-admin/landing-pages');
-    safeRevalidatePath('/super-admin');
-    safeRevalidatePath(`/p/${page.slug}`);
-    safeRevalidatePath(`/${page.slug}`);
+    revalidatePath('/dashboard/landing-pages');
+    revalidatePath('/dashboard');
+    revalidatePath(`/p/${page.slug}`);
+
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message || 'Failed to delete landing page.' };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Duplicate
+// ---------------------------------------------------------------------------
 
 export async function duplicateLandingPageAction(id: string) {
   try {
@@ -444,7 +349,8 @@ export async function duplicateLandingPageAction(id: string) {
       return { success: false, error: 'Unauthorized' };
     }
 
-    const newSlug = slugify(`${original.slug}-copy-${Math.floor(Math.random() * 1000)}`);
+    const newSlug = slugify(`${original.slug}-copy-${Math.floor(Math.random() * 9000) + 1000}`);
+
     const copyPage = await db.landingPage.create({
       data: {
         workspaceId: original.workspaceId,
@@ -471,19 +377,18 @@ export async function duplicateLandingPageAction(id: string) {
       },
     });
 
-    try {
-      await writePersistentBackup();
-    } catch (e) {}
+    revalidatePath('/dashboard/landing-pages');
+    revalidatePath('/dashboard');
 
-    safeRevalidatePath('/dashboard/landing-pages');
-    safeRevalidatePath('/dashboard');
-    safeRevalidatePath('/super-admin/landing-pages');
-    safeRevalidatePath('/super-admin');
     return { success: true, page: copyPage };
   } catch (error: any) {
     return { success: false, error: error.message || 'Failed to duplicate page.' };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Toggle Status
+// ---------------------------------------------------------------------------
 
 export async function toggleLandingPageStatusAction(id: string) {
   try {
@@ -503,73 +408,63 @@ export async function toggleLandingPageStatusAction(id: string) {
 
     const newStatus = existing.status === PageStatus.ACTIVE ? PageStatus.INACTIVE : PageStatus.ACTIVE;
 
-    const updated = await db.landingPage.update({
+    await db.landingPage.update({
       where: { id },
-      data: {
-        status: newStatus,
-        updatedAt: new Date(),
-        archivedAt: null,
-      },
+      data: { status: newStatus, updatedAt: new Date(), archivedAt: null },
     });
 
-    try {
-      await writePersistentBackup();
-    } catch (e) {}
+    revalidatePath('/dashboard/landing-pages');
+    revalidatePath('/dashboard');
 
-    safeRevalidatePath('/dashboard/landing-pages');
-    safeRevalidatePath('/dashboard');
-    safeRevalidatePath('/super-admin/landing-pages');
-    safeRevalidatePath('/super-admin');
-    return { success: true, status: updated.status };
+    return { success: true, status: newStatus };
   } catch (error: any) {
     return { success: false, error: error.message || 'Failed to toggle status.' };
   }
 }
 
+// ---------------------------------------------------------------------------
+// Public: Track Views & Clicks
+// ---------------------------------------------------------------------------
+
 export async function trackPageViewAction(slug: string) {
   try {
-    const cleanSlug = slug ? slug.toLowerCase().trim() : '';
-    if (!cleanSlug) return;
-
+    if (!slug) return;
     await db.landingPage.updateMany({
-      where: { slug: cleanSlug },
+      where: { slug: slug.toLowerCase().trim() },
       data: { viewsCount: { increment: 1 } },
     });
-  } catch (error) {
-    // Non-blocking
+  } catch {
+    // Non-blocking — never fail a public page load due to analytics
   }
 }
 
 export async function trackWhatsAppClickAction(slug: string) {
   try {
-    const cleanSlug = slug ? slug.toLowerCase().trim() : '';
-    if (!cleanSlug) return;
-
+    if (!slug) return;
     await db.landingPage.updateMany({
-      where: { slug: cleanSlug },
+      where: { slug: slug.toLowerCase().trim() },
       data: { clicksCount: { increment: 1 } },
     });
-  } catch (error) {
+  } catch {
     // Non-blocking
   }
 }
 
+// ---------------------------------------------------------------------------
+// Public: Get Page by Slug (for /p/[slug] route)
+// ---------------------------------------------------------------------------
+
 export async function getPublicLandingPageBySlug(slug: string) {
   try {
-    const cleanSlug = slug ? slug.toLowerCase().trim() : '';
-    if (!cleanSlug) return null;
+    if (!slug) return null;
 
-    await syncBackupIntoDatabase();
-
-    const page = await db.landingPage.findFirst({
+    return db.landingPage.findFirst({
       where: {
-        slug: cleanSlug,
+        slug: slug.toLowerCase().trim(),
         status: PageStatus.ACTIVE,
       },
     });
-
-    return page;
-  } catch (error) {
+  } catch {
     return null;
   }
 }

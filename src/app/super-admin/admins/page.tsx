@@ -74,7 +74,7 @@ export default function SuperAdminAdminsPage() {
   const handleToggleSuspend = async (adminId: string) => {
     const res = await toggleSuspendAdminAction(adminId);
     if (res.success) {
-      toast(res.isSuspended ? 'Admin account suspended' : 'Admin account reactivated');
+      toast('Admin account status updated');
       fetchAdmins();
     } else {
       toast(res.error || 'Operation failed', 'error');

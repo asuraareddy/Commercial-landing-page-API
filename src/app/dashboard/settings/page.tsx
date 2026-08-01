@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { getWorkspaceSettingsAction, updateWorkspaceSettingsAction } from '@/actions/workspace.actions';
-import { uploadMediaToSupabase } from '@/lib/supabase';
+import { supabaseBrowser, BUCKET_NAME } from '@/lib/supabase';
 import { useToast } from '@/components/ui/toast';
 import { Building2, Save, Upload, Sparkles, MessageSquare, Palette, Mail } from 'lucide-react';
 
@@ -53,9 +53,22 @@ export default function WorkspaceSettingsPage() {
 
     setUploadingLogo(true);
     try {
-      const buffer = await file.arrayBuffer();
-      const publicUrl = await uploadMediaToSupabase(buffer, file.name, file.type, 'logos');
-      handleChange('logoUrl', publicUrl);
+      const timestamp = Date.now();
+      const ext = file.name.match(/\.([a-zA-Z0-9]+)$/)?.[1]?.toLowerCase() || 'png';
+      const filePath = `logos/${timestamp}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+      if (!supabaseBrowser) {
+        throw new Error('Storage is not configured.');
+      }
+
+      const { error } = await supabaseBrowser.storage
+        .from(BUCKET_NAME)
+        .upload(filePath, file, { contentType: file.type, upsert: true });
+
+      if (error) throw new Error(error.message);
+
+      const { data: urlData } = supabaseBrowser.storage.from(BUCKET_NAME).getPublicUrl(filePath);
+      handleChange('logoUrl', `${urlData.publicUrl}?v=${timestamp}`);
       toast('Workspace Logo uploaded to Supabase Storage!');
     } catch (err: any) {
       toast(err.message || 'Logo upload failed', 'error');

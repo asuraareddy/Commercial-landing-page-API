@@ -3,8 +3,27 @@
 import React, { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import { PageConfig, pagesConfig as defaultPages } from "@/config/pages";
-import { fetchRemoteConfig, saveRemoteConfig } from "@/lib/configStore";
 import { WhatsAppIcon } from "./WhatsAppIcon";
+
+// Legacy component — config is stored in browser localStorage only
+async function fetchRemoteConfig(): Promise<Record<string, PageConfig>> {
+  try {
+    if (typeof window !== "undefined") {
+      const local = localStorage.getItem("whatsapp_bridge_configs_v1");
+      if (local) return JSON.parse(local);
+    }
+  } catch {}
+  return defaultPages;
+}
+
+async function saveRemoteConfig(configs: Record<string, PageConfig>): Promise<boolean> {
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("whatsapp_bridge_configs_v1", JSON.stringify(configs));
+    }
+  } catch {}
+  return true;
+}
 
 export const AdminDashboard: React.FC = () => {
   const [configs, setConfigs] = useState<Record<string, PageConfig>>(defaultPages);

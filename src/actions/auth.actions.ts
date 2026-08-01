@@ -5,7 +5,6 @@ import { setSessionCookie, clearSessionCookie, getSession } from '@/lib/auth';
 import { loginSchema } from '@/lib/schemas';
 import bcrypt from 'bcryptjs';
 import { UserRole, SubscriptionStatus } from '@/lib/types';
-import { fetchCloudState, saveCloudState } from '@/lib/cloud-store';
 
 export async function loginAction(formData: FormData) {
   try {
@@ -20,22 +19,10 @@ export async function loginAction(formData: FormData) {
     const { email, password } = validated.data;
     const cleanEmail = email.toLowerCase().trim();
 
-    // 1. Check database first
-    let user: any = null;
-    try {
-      user = await db.user.findUnique({
-        where: { email: cleanEmail },
-        include: { workspace: true },
-      });
-    } catch (e) {
-      // Non-blocking
-    }
-
-    // 2. Check cloud store if not found in local DB isolate
-    if (!user) {
-      const state = await fetchCloudState();
-      user = state.admins.find((u) => u.email === cleanEmail);
-    }
+    const user = await db.user.findUnique({
+      where: { email: cleanEmail },
+      include: { workspace: true },
+    });
 
     if (!user) {
       return { success: false, error: 'Invalid email or password' };
@@ -54,8 +41,8 @@ export async function loginAction(formData: FormData) {
       id: user.id,
       email: user.email,
       role: user.role as UserRole,
-      workspaceId: user.workspace?.id || `ws_${user.id}`,
-      workspaceName: user.workspace?.name || 'My Workspace',
+      workspaceId: user.workspace?.id ?? null,
+      workspaceName: user.workspace?.name ?? null,
     });
 
     return {
@@ -64,95 +51,59 @@ export async function loginAction(formData: FormData) {
       redirectUrl: user.role === UserRole.SUPER_ADMIN ? '/super-admin' : '/dashboard',
     };
   } catch (error: any) {
-    return { success: false, error: error.message || 'An unexpected error occurred during login' };
+    console.error('loginAction error:', error);
+    return { success: false, error: 'An unexpected error occurred. Please try again.' };
   }
 }
 
 export async function registerAdminUserAction(formData: FormData) {
   try {
     const businessName = formData.get('businessName')?.toString().trim();
-    const fullName = formData.get('fullName')?.toString().trim();
     const email = formData.get('email')?.toString().toLowerCase().trim();
-    const phone = formData.get('phone')?.toString().trim();
     const password = formData.get('password')?.toString();
 
     if (!businessName || !email || !password) {
       return { success: false, error: 'Business name, email, and password are required.' };
     }
 
-    const state = await fetchCloudState();
-    const cloudUserExists = state.admins.some((u) => u.email === email);
+    if (password.length < 6) {
+      return { success: false, error: 'Password must be at least 6 characters.' };
+    }
 
-    let dbUserExists = false;
-    try {
-      const existingUser = await db.user.findUnique({ where: { email } });
-      dbUserExists = !!existingUser;
-    } catch (e) {}
-
-    if (cloudUserExists || dbUserExists) {
+    const existingUser = await db.user.findUnique({ where: { email } });
+    if (existingUser) {
       return { success: false, error: 'An account with this email already exists. Please sign in instead.' };
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const userId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const workspaceId = `ws_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-    const newUserObject = {
-      id: userId,
-      email,
-      passwordHash,
-      role: UserRole.ADMIN,
-      isSuspended: false,
-      createdAt: new Date().toISOString(),
-      workspace: {
-        id: workspaceId,
-        name: businessName,
-        supportEmail: email,
-        subscription: {
-          planName: 'Unlimited',
-          price: 500.0,
-          currency: 'USD',
-          billingType: 'One Time',
-          status: SubscriptionStatus.ACTIVE,
-        },
-      },
-    };
-
-    try {
-      await db.user.create({
-        data: {
-          id: userId,
-          email,
-          passwordHash,
-          role: UserRole.ADMIN,
-          workspace: {
-            create: {
-              id: workspaceId,
-              name: businessName,
-              supportEmail: email,
-              subscription: {
-                create: {
-                  planName: 'Unlimited',
-                  price: 500.0,
-                  currency: 'USD',
-                  billingType: 'One Time',
-                  status: SubscriptionStatus.ACTIVE,
-                },
+    const newUser = await db.user.create({
+      data: {
+        email,
+        passwordHash,
+        role: UserRole.ADMIN,
+        workspace: {
+          create: {
+            name: businessName,
+            supportEmail: email,
+            subscription: {
+              create: {
+                planName: 'Unlimited',
+                price: 500.0,
+                currency: 'USD',
+                billingType: 'One Time',
+                status: SubscriptionStatus.ACTIVE,
               },
             },
           },
         },
-      });
-    } catch (e) {
-      // Handled via cloud store
-    }
+      },
+      include: { workspace: true },
+    });
 
-    // Save to Cloud Store globally
-    state.admins.unshift(newUserObject);
-    await saveCloudState(state);
-
-    return { success: true, userId };
+    return { success: true, userId: newUser.id };
   } catch (error: any) {
+    console.error('registerAdminUserAction error:', error);
     return { success: false, error: error.message || 'Failed to complete registration.' };
   }
 }
