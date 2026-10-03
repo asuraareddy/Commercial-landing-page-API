@@ -1,6 +1,7 @@
 import { getLandingPageByIdAction } from '@/actions/landing-page.actions';
 import { LandingPageForm } from '@/components/landing/landing-page-form';
 import { getSession } from '@/lib/auth';
+import { getWorkspaceSettingsAction } from '@/actions/workspace.actions';
 import { notFound, redirect } from 'next/navigation';
 
 interface EditPageProps {
@@ -18,5 +19,7 @@ export default async function EditLandingPage({ params }: EditPageProps) {
     notFound();
   }
 
-  return <LandingPageForm initialData={page} isEdit={true} />;
+  const workspace = await getWorkspaceSettingsAction();
+
+  return <LandingPageForm initialData={page} isEdit={true} domains={workspace?.domains || []} />;
 }

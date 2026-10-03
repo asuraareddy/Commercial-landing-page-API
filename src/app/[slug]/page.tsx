@@ -1,11 +1,10 @@
-import { getPublicLandingPageBySlug } from '@/actions/landing-page.actions';
+import { getPublicLandingPage } from '@/lib/public-pages';
 import { LandingPageTemplate } from '@/components/landing/landing-page-template';
 import { notFound } from 'next/navigation';
 import { Metadata } from 'next';
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
-export const fetchCache = 'force-no-store';
+export const revalidate = 60; // ISR cache for 60 seconds
+export const dynamicParams = true;
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -13,7 +12,7 @@ interface PageProps {
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params;
-  const page = await getPublicLandingPageBySlug(slug);
+  const page = await getPublicLandingPage(slug);
 
   if (!page) {
     return {
@@ -35,13 +34,8 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function RootSlugPage({ params }: PageProps) {
   const { slug } = await params;
 
-  // Protect system routes
-  const reservedSlugs = ['login', 'signup', 'dashboard', 'super-admin', 'forgot-password', 'api', 'p'];
-  if (reservedSlugs.includes(slug.toLowerCase())) {
-    notFound();
-  }
-
-  const page = await getPublicLandingPageBySlug(slug);
+  // Reserved system routes are rejected inside getPublicLandingPage
+  const page = await getPublicLandingPage(slug);
 
   if (!page) {
     notFound();

@@ -48,6 +48,9 @@ model Domain {
   status      String    @default("PENDING")
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  landingPages LandingPage[]
+
+  @@index([workspaceId])
 }
 
 model Subscription {
@@ -70,9 +73,12 @@ model LandingPage {
   id               String    @id @default(cuid())
   workspaceId      String
   workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // null = legacy page served on the main app host (NEXT_PUBLIC_APP_URL / any unregistered host)
+  domainId         String?
+  domain           Domain?   @relation(fields: [domainId], references: [id], onDelete: SetNull)
   userEmail        String?
   name             String
-  slug             String    @unique
+  slug             String
   companyName      String
   logoUrl          String?
   mediaUrl         String?
@@ -93,4 +99,9 @@ model LandingPage {
   archivedAt       DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+
+  @@unique([domainId, slug])
+  @@index([slug])
+  @@index([workspaceId])
+  @@index([userEmail])
 }

@@ -6,6 +6,7 @@ import {
   createGlobalDomainAction,
   toggleGlobalDomainStatusAction,
   deleteGlobalDomainAction,
+  getWorkspaceOptionsAction,
 } from '@/actions/super-admin.actions';
 import { useToast } from '@/components/ui/toast';
 import { Modal } from '@/components/ui/modal';
@@ -28,12 +29,18 @@ export default function SuperAdminDomainsPage() {
   // Modal state
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [newDomainName, setNewDomainName] = useState('');
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('');
+  const [workspaces, setWorkspaces] = useState<any[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   const fetchDomains = async () => {
     setLoading(true);
-    const data = await getAllDomainsAction();
+    const [data, wsData] = await Promise.all([
+      getAllDomainsAction(),
+      getWorkspaceOptionsAction(),
+    ]);
     setDomains(data);
+    setWorkspaces(wsData);
     setLoading(false);
   };
 
@@ -48,9 +55,15 @@ export default function SuperAdminDomainsPage() {
       return;
     }
 
+    if (!selectedWorkspaceId) {
+      toast('Please select a workspace for this domain', 'error');
+      return;
+    }
+
     setSubmitting(true);
     const formData = new FormData();
     formData.append('domainName', newDomainName);
+    formData.append('workspaceId', selectedWorkspaceId);
 
     const res = await createGlobalDomainAction(formData);
     setSubmitting(false);
@@ -59,6 +72,7 @@ export default function SuperAdminDomainsPage() {
       toast('Global domain added successfully!');
       setIsAddOpen(false);
       setNewDomainName('');
+      setSelectedWorkspaceId('');
       fetchDomains();
     } else {
       toast(res.error || 'Failed to add domain', 'error');
@@ -234,6 +248,23 @@ export default function SuperAdminDomainsPage() {
               placeholder="e.g. go.apexdigital.com"
               className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:border-emerald-500 focus:outline-none"
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold uppercase text-slate-300">Assign to Workspace *</label>
+            <select
+              required
+              value={selectedWorkspaceId}
+              onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+              className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:border-emerald-500 focus:outline-none"
+            >
+              <option value="" disabled>Select an admin/workspace</option>
+              {workspaces.map((ws) => (
+                <option key={ws.id} value={ws.id}>
+                  {ws.name} ({ws.user?.email})
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="flex justify-end gap-3 pt-4">

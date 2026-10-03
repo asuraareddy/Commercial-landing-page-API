@@ -5,6 +5,7 @@ import { requireAuth } from '@/lib/auth';
 import { UserRole, SubscriptionStatus, DomainStatus, PageStatus } from '@/lib/types';
 import { revalidatePath } from 'next/cache';
 import bcrypt from 'bcryptjs';
+import { normalizeDomain, invalidateDomainCache } from '@/lib/domains';
 
 // ---------------------------------------------------------------------------
 // Stats
@@ -176,7 +177,10 @@ export async function getAllLandingPagesForSuperAdminAction() {
 
   const pages = await db.landingPage.findMany({
     orderBy: { createdAt: 'desc' },
-    include: { workspace: true },
+    include: {
+      workspace: { select: { id: true, name: true, user: { select: { email: true } } } },
+      domain: { select: { id: true, domainName: true } },
+    },
   });
 
   return pages;
@@ -215,27 +219,47 @@ export async function getAllDomainsAction() {
   await requireAuth([UserRole.SUPER_ADMIN]);
 
   const domains = await db.domain.findMany({
-    include: { workspace: true },
+    include: {
+      workspace: { select: { id: true, name: true, user: { select: { email: true } } } },
+      _count: { select: { landingPages: true } },
+    },
     orderBy: { createdAt: 'desc' },
   });
 
   return domains;
 }
 
+/** Lightweight list of workspaces for the domain-assignment dropdown. */
+export async function getWorkspaceOptionsAction() {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  return db.workspace.findMany({
+    select: { id: true, name: true, user: { select: { email: true, role: true } } },
+    orderBy: { name: 'asc' },
+  });
+}
+
 export async function createGlobalDomainAction(formData: FormData) {
   await requireAuth([UserRole.SUPER_ADMIN]);
 
-  const domainName = formData.get('domainName')?.toString().toLowerCase().trim();
+  const rawDomain = formData.get('domainName')?.toString() || '';
+  const workspaceId = formData.get('workspaceId')?.toString().trim();
+  const domainName = normalizeDomain(rawDomain);
 
-  if (!domainName) {
+  if (!rawDomain.trim()) {
     return { success: false, error: 'Domain name is required' };
+  }
+  if (!domainName) {
+    return { success: false, error: 'Invalid domain format. Use e.g. go.client.com (no http:// or paths).' };
+  }
+  if (!workspaceId) {
+    return { success: false, error: 'Please select which admin/workspace this domain belongs to' };
   }
 
   try {
-    // Global domains need a workspace — use the first available or skip
-    const firstWorkspace = await db.workspace.findFirst();
-    if (!firstWorkspace) {
-      return { success: false, error: 'No workspace found to associate this domain with' };
+    const workspace = await db.workspace.findUnique({ where: { id: workspaceId }, select: { id: true } });
+    if (!workspace) {
+      return { success: false, error: 'Selected workspace no longer exists' };
     }
 
     const existing = await db.domain.findUnique({ where: { domainName } });
@@ -243,21 +267,63 @@ export async function createGlobalDomainAction(formData: FormData) {
       return { success: false, error: `Domain "${domainName}" is already registered` };
     }
 
+    const isFirstDomain = (await db.domain.count({ where: { workspaceId } })) === 0;
+
     const newDomain = await db.domain.create({
       data: {
-        workspaceId: firstWorkspace.id,
+        workspaceId,
         domainName,
-        isPrimary: false,
+        isPrimary: isFirstDomain,
         status: DomainStatus.ACTIVE,
       },
-      include: { workspace: true },
+      include: { workspace: { select: { id: true, name: true } } },
     });
 
+    invalidateDomainCache();
     revalidatePath('/super-admin/domains');
     revalidatePath('/super-admin');
     return { success: true, domain: newDomain };
   } catch (error: any) {
+    if (error?.code === 'P2002') {
+      return { success: false, error: `Domain "${domainName}" is already registered` };
+    }
     return { success: false, error: error.message || 'Failed to create domain' };
+  }
+}
+
+export async function assignDomainWorkspaceAction(id: string, workspaceId: string) {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  try {
+    const domain = await db.domain.findUnique({
+      where: { id },
+      include: { _count: { select: { landingPages: true } } },
+    });
+    if (!domain) return { success: false, error: 'Domain not found' };
+    if (domain.workspaceId === workspaceId) return { success: true };
+
+    if (domain._count.landingPages > 0) {
+      return {
+        success: false,
+        error: `Cannot reassign: ${domain._count.landingPages} landing page(s) are published on this domain. Move or delete them first.`,
+      };
+    }
+
+    const workspace = await db.workspace.findUnique({ where: { id: workspaceId }, select: { id: true } });
+    if (!workspace) return { success: false, error: 'Workspace not found' };
+
+    const isFirstDomain = (await db.domain.count({ where: { workspaceId } })) === 0;
+
+    await db.domain.update({
+      where: { id },
+      data: { workspaceId, isPrimary: isFirstDomain },
+    });
+
+    invalidateDomainCache();
+    revalidatePath('/super-admin/domains');
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Failed to reassign domain' };
   }
 }
 
@@ -275,6 +341,7 @@ export async function toggleGlobalDomainStatusAction(id: string) {
       data: { status: newStatus },
     });
 
+    invalidateDomainCache();
     revalidatePath('/super-admin/domains');
     return { success: true };
   } catch (error: any) {
@@ -286,8 +353,17 @@ export async function deleteGlobalDomainAction(id: string) {
   await requireAuth([UserRole.SUPER_ADMIN]);
 
   try {
+    const pageCount = await db.landingPage.count({ where: { domainId: id } });
+    if (pageCount > 0) {
+      return {
+        success: false,
+        error: `Cannot delete: ${pageCount} landing page(s) are published on this domain. Move or delete them first.`,
+      };
+    }
+
     await db.domain.delete({ where: { id } });
 
+    invalidateDomainCache();
     revalidatePath('/super-admin/domains');
     return { success: true };
   } catch (error: any) {
@@ -304,8 +380,12 @@ export async function getAllWorkspacesAction() {
 
   const workspaces = await db.workspace.findMany({
     include: {
-      user: true,
-      landingPages: true,
+      user: { select: { email: true } },
+      landingPages: {
+        select: { id: true, name: true, slug: true },
+        orderBy: { createdAt: 'desc' },
+      },
+      domains: { select: { id: true, domainName: true } },
       subscription: true,
     },
     orderBy: { createdAt: 'desc' },
@@ -316,6 +396,7 @@ export async function getAllWorkspacesAction() {
     name: ws.name,
     user: { email: ws.user?.email || 'N/A' },
     landingPages: ws.landingPages || [],
+    domains: ws.domains || [],
     subscription: ws.subscription || { status: SubscriptionStatus.ACTIVE },
     createdAt: ws.createdAt,
   }));

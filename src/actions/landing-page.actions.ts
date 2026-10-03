@@ -1,26 +1,31 @@
 'use server';
 
 import { db } from '@/lib/db';
-import { requireAuth } from '@/lib/auth';
-import { UserRole, PageStatus, MediaType } from '@/lib/types';
+import { requireAuth, type SessionUser } from '@/lib/auth';
+import { UserRole, PageStatus, MediaType, DomainStatus } from '@/lib/types';
 import { revalidatePath } from 'next/cache';
 import { slugify } from '@/lib/utils';
+import { getAppHost } from '@/lib/domains';
 
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+const ARCHIVAL_THROTTLE_MS = 6 * 60 * 60 * 1000; // run the archival sweep at most every 6h per instance
+const USABLE_DOMAIN_STATUSES = [DomainStatus.ACTIVE, DomainStatus.VERIFIED] as string[];
+
+const domainSelect = { select: { id: true, domainName: true } } as const;
 
 // ---------------------------------------------------------------------------
-// Internal: ensure admin has a workspace in the database
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 async function ensureWorkspace(userId: string, email?: string | null, sessionWorkspaceId?: string | null): Promise<string> {
   // 1. Try session workspace first
   if (sessionWorkspaceId) {
-    const ws = await db.workspace.findUnique({ where: { id: sessionWorkspaceId } });
+    const ws = await db.workspace.findUnique({ where: { id: sessionWorkspaceId }, select: { id: true } });
     if (ws) return ws.id;
   }
 
   // 2. Try find by userId
-  const ws = await db.workspace.findUnique({ where: { userId } });
+  const ws = await db.workspace.findUnique({ where: { userId }, select: { id: true } });
   if (ws) return ws.id;
 
   // 3. Create a new workspace for this user
@@ -39,16 +44,65 @@ async function ensureWorkspace(userId: string, email?: string | null, sessionWor
         },
       },
     },
+    select: { id: true },
   });
 
   return newWs.id;
 }
 
-// ---------------------------------------------------------------------------
-// Internal: 90-day archival policy (inactive pages only)
-// ---------------------------------------------------------------------------
+/** Super admin can access everything; admins only pages in their workspace or created by their email. */
+function canAccessPage(session: SessionUser, page: { workspaceId: string; userEmail: string | null }) {
+  if (session.role === UserRole.SUPER_ADMIN) return true;
+  if (session.workspaceId && page.workspaceId === session.workspaceId) return true;
+  const email = session.email?.toLowerCase().trim();
+  return !!email && !!page.userEmail && page.userEmail.toLowerCase() === email;
+}
+
+/**
+ * Validate the domain a page should be published under.
+ * Returns the domain row, or an error string.
+ */
+async function resolveTargetDomain(
+  session: SessionUser,
+  domainId: string | null | undefined
+): Promise<{ domain: { id: string; domainName: string; workspaceId: string } } | { error: string }> {
+  if (!domainId) {
+    return { error: 'Please select a domain for this landing page.' };
+  }
+
+  const domain = await db.domain.findUnique({
+    where: { id: domainId },
+    select: { id: true, domainName: true, workspaceId: true, status: true },
+  });
+
+  if (!domain) return { error: 'Selected domain no longer exists. Please choose another domain.' };
+  if (!USABLE_DOMAIN_STATUSES.includes(domain.status)) {
+    return { error: `Domain "${domain.domainName}" is disabled. Ask your Super Admin to enable it.` };
+  }
+
+  if (session.role !== UserRole.SUPER_ADMIN) {
+    const ownWorkspaceId = await ensureWorkspace(session.id, session.email, session.workspaceId);
+    if (domain.workspaceId !== ownWorkspaceId) {
+      return { error: 'You are not allowed to publish on this domain.' };
+    }
+  }
+
+  return { domain: { id: domain.id, domainName: domain.domainName, workspaceId: domain.workspaceId } };
+}
+
+async function isSlugTaken(domainId: string | null, slug: string, excludeId?: string) {
+  const found = await db.landingPage.findFirst({
+    where: { domainId, slug, ...(excludeId ? { id: { not: excludeId } } : {}) },
+    select: { id: true },
+  });
+  return !!found;
+}
+
+let lastArchivalRun = 0;
 
 async function apply90DayArchivalPolicy(): Promise<void> {
+  if (Date.now() - lastArchivalRun < ARCHIVAL_THROTTLE_MS) return;
+  lastArchivalRun = Date.now();
   try {
     const ninetyDaysAgo = new Date(Date.now() - NINETY_DAYS_MS);
     await db.landingPage.updateMany({
@@ -66,46 +120,89 @@ async function apply90DayArchivalPolicy(): Promise<void> {
   }
 }
 
+async function listPagesForSession(session: SessionUser) {
+  // Fire-and-forget: never block the dashboard on the archival sweep
+  void apply90DayArchivalPolicy();
+
+  if (session.role === UserRole.SUPER_ADMIN) {
+    return db.landingPage.findMany({
+      where: { status: { not: PageStatus.ARCHIVED } },
+      include: { domain: domainSelect },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  const email = session.email?.toLowerCase().trim();
+  const workspaceId = session.workspaceId;
+
+  const orConditions: any[] = [];
+  if (workspaceId) orConditions.push({ workspaceId });
+  if (email) orConditions.push({ userEmail: email });
+  if (orConditions.length === 0) return [];
+
+  return db.landingPage.findMany({
+    where: {
+      status: { not: PageStatus.ARCHIVED },
+      OR: orConditions,
+    },
+    include: { domain: domainSelect },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+async function getPrimaryDomainName(session: SessionUser): Promise<string> {
+  try {
+    if (session.workspaceId) {
+      const primary = await db.domain.findFirst({
+        where: { workspaceId: session.workspaceId },
+        orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+        select: { domainName: true },
+      });
+      if (primary) return primary.domainName;
+    }
+  } catch {
+    // fall through
+  }
+  return getAppHost() || 'Not configured';
+}
+
+function buildStats(pages: { status: string; viewsCount: number | null; clicksCount: number | null }[], primaryDomain: string) {
+  return {
+    totalPages: pages.length,
+    activePages: pages.filter((p) => p.status === PageStatus.ACTIVE).length,
+    inactivePages: pages.filter((p) => p.status === PageStatus.INACTIVE).length,
+    totalViews: pages.reduce((acc, p) => acc + (p.viewsCount || 0), 0),
+    totalClicks: pages.reduce((acc, p) => acc + (p.clicksCount || 0), 0),
+    subscription: {
+      planName: 'Unlimited SaaS License',
+      price: 500.0,
+      currency: 'USD',
+      billingType: 'One Time',
+      status: 'ACTIVE',
+    },
+    primaryDomain,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard Stats
 // ---------------------------------------------------------------------------
 
-export async function getAdminDashboardStatsAction() {
+/** Stats + page list in one round trip (used by /dashboard to avoid querying pages twice). */
+export async function getAdminDashboardDataAction() {
   try {
     const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-    const pages = await getLandingPagesAction();
-
-    const activePages = pages.filter((p) => p.status === PageStatus.ACTIVE).length;
-    const inactivePages = pages.filter((p) => p.status === PageStatus.INACTIVE).length;
-    const totalViews = pages.reduce((acc, p) => acc + (p.viewsCount || 0), 0);
-    const totalClicks = pages.reduce((acc, p) => acc + (p.clicksCount || 0), 0);
-
-    return {
-      totalPages: pages.length,
-      activePages,
-      inactivePages,
-      totalViews,
-      totalClicks,
-      subscription: {
-        planName: 'Unlimited SaaS License',
-        price: 500.0,
-        currency: 'USD',
-        billingType: 'One Time',
-        status: 'ACTIVE',
-      },
-      primaryDomain: 'go.wagateway.com',
-    };
-  } catch {
-    return {
-      totalPages: 0,
-      activePages: 0,
-      inactivePages: 0,
-      totalViews: 0,
-      totalClicks: 0,
-      subscription: { planName: 'Unlimited SaaS License', price: 500.0, currency: 'USD', billingType: 'One Time', status: 'ACTIVE' },
-      primaryDomain: 'go.wagateway.com',
-    };
+    const [pages, primaryDomain] = await Promise.all([listPagesForSession(session), getPrimaryDomainName(session)]);
+    return { stats: buildStats(pages, primaryDomain), pages };
+  } catch (error) {
+    console.error('getAdminDashboardDataAction error:', error);
+    return { stats: buildStats([], getAppHost() || 'Not configured'), pages: [] };
   }
+}
+
+export async function getAdminDashboardStatsAction() {
+  const { stats } = await getAdminDashboardDataAction();
+  return stats;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,31 +212,37 @@ export async function getAdminDashboardStatsAction() {
 export async function getLandingPagesAction() {
   try {
     const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-    await apply90DayArchivalPolicy();
+    return await listPagesForSession(session);
+  } catch (error: any) {
+    console.error('getLandingPagesAction error:', error);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Domains available in the landing-page form
+// ---------------------------------------------------------------------------
+
+export async function getAssignableDomainsAction() {
+  try {
+    const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
 
     if (session.role === UserRole.SUPER_ADMIN) {
-      return db.landingPage.findMany({
-        where: { status: { not: PageStatus.ARCHIVED } },
-        orderBy: { createdAt: 'desc' },
+      return db.domain.findMany({
+        where: { status: { in: USABLE_DOMAIN_STATUSES } },
+        select: { id: true, domainName: true, isPrimary: true, workspace: { select: { id: true, name: true } } },
+        orderBy: { domainName: 'asc' },
       });
     }
 
-    const email = session.email?.toLowerCase().trim();
-    const workspaceId = session.workspaceId;
-
-    const orConditions: any[] = [];
-    if (workspaceId) orConditions.push({ workspaceId });
-    if (email) orConditions.push({ userEmail: email });
-
-    return db.landingPage.findMany({
-      where: {
-        status: { not: PageStatus.ARCHIVED },
-        OR: orConditions.length > 0 ? orConditions : undefined,
-      },
-      orderBy: { createdAt: 'desc' },
+    const workspaceId = await ensureWorkspace(session.id, session.email, session.workspaceId);
+    return db.domain.findMany({
+      where: { workspaceId, status: { in: USABLE_DOMAIN_STATUSES } },
+      select: { id: true, domainName: true, isPrimary: true, workspace: { select: { id: true, name: true } } },
+      orderBy: [{ isPrimary: 'desc' }, { domainName: 'asc' }],
     });
-  } catch (error: any) {
-    console.error('getLandingPagesAction error:', error);
+  } catch (error) {
+    console.error('getAssignableDomainsAction error:', error);
     return [];
   }
 }
@@ -151,18 +254,10 @@ export async function getLandingPagesAction() {
 export async function getLandingPageByIdAction(id: string) {
   try {
     const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
-    const page = await db.landingPage.findUnique({ where: { id } });
+    const page = await db.landingPage.findUnique({ where: { id }, include: { domain: domainSelect } });
 
     if (!page) return null;
-
-    if (
-      session.role !== UserRole.SUPER_ADMIN &&
-      session.workspaceId &&
-      page.workspaceId !== session.workspaceId &&
-      page.userEmail !== session.email
-    ) {
-      throw new Error('FORBIDDEN');
-    }
+    if (!canAccessPage(session, page)) return null;
 
     return page;
   } catch {
@@ -178,21 +273,30 @@ export async function createLandingPageAction(data: any) {
   try {
     const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
     const userEmail = session.email?.toLowerCase().trim();
-    const workspaceId = await ensureWorkspace(session.id, userEmail, session.workspaceId);
 
-    const formattedSlug = slugify(data.slug || data.name);
+    const target = await resolveTargetDomain(session, data?.domainId);
+    if ('error' in target) return { success: false, error: target.error };
+    const { domain } = target;
+
+    // The page belongs to the workspace that owns the domain
+    const workspaceId =
+      session.role === UserRole.SUPER_ADMIN
+        ? domain.workspaceId
+        : await ensureWorkspace(session.id, userEmail, session.workspaceId);
+
+    const formattedSlug = slugify(data.slug || data.name || '');
     if (!formattedSlug) {
       return { success: false, error: 'Page name is required to generate a URL slug.' };
     }
 
-    const existingSlug = await db.landingPage.findUnique({ where: { slug: formattedSlug } });
-    if (existingSlug) {
-      return { success: false, error: `Slug "${formattedSlug}" is already taken. Please choose another name.` };
+    if (await isSlugTaken(domain.id, formattedSlug)) {
+      return { success: false, error: `Slug "${formattedSlug}" is already used on ${domain.domainName}. Please choose another.` };
     }
 
     const newPage = await db.landingPage.create({
       data: {
         workspaceId,
+        domainId: domain.id,
         userEmail,
         name: data.name,
         slug: formattedSlug,
@@ -214,15 +318,18 @@ export async function createLandingPageAction(data: any) {
         viewsCount: 0,
         clicksCount: 0,
       },
+      include: { domain: domainSelect },
     });
 
     revalidatePath('/dashboard/landing-pages');
     revalidatePath('/dashboard');
-    revalidatePath(`/p/${formattedSlug}`);
 
     return { success: true, page: newPage };
   } catch (error: any) {
     console.error('createLandingPageAction error:', error);
+    if (error?.code === 'P2002') {
+      return { success: false, error: 'This slug is already used on the selected domain.' };
+    }
     return { success: false, error: error.message || 'Failed to create landing page. Please try again.' };
   }
 }
@@ -240,27 +347,47 @@ export async function updateLandingPageAction(id: string, data: any) {
       return { success: false, error: 'Landing page not found' };
     }
 
-    if (
-      session.role !== UserRole.SUPER_ADMIN &&
-      session.workspaceId &&
-      existing.workspaceId !== session.workspaceId &&
-      existing.userEmail !== session.email
-    ) {
+    if (!canAccessPage(session, existing)) {
       return { success: false, error: 'Unauthorized access to this landing page' };
     }
 
-    const formattedSlug = slugify(data.slug || data.name);
+    // Domain: legacy pages (domainId = null) may stay unassigned; assigned pages must keep a valid domain.
+    let targetDomainId: string | null = existing.domainId;
+    let targetWorkspaceId = existing.workspaceId;
+    let domainLabel = 'the default app domain';
+    const requestedDomainId: string | null = data?.domainId || null;
 
-    if (formattedSlug !== existing.slug) {
-      const slugCheck = await db.landingPage.findUnique({ where: { slug: formattedSlug } });
-      if (slugCheck) {
-        return { success: false, error: `Slug "${formattedSlug}" is already taken.` };
+    if (requestedDomainId) {
+      if (requestedDomainId !== existing.domainId) {
+        const target = await resolveTargetDomain(session, requestedDomainId);
+        if ('error' in target) return { success: false, error: target.error };
+        targetDomainId = target.domain.id;
+        if (session.role === UserRole.SUPER_ADMIN) targetWorkspaceId = target.domain.workspaceId;
+        domainLabel = target.domain.domainName;
+      } else {
+        domainLabel = 'this domain';
       }
+    } else if (existing.domainId) {
+      return { success: false, error: 'Please select a domain for this landing page.' };
+    }
+
+    const formattedSlug = slugify(data.slug || data.name || '');
+    if (!formattedSlug) {
+      return { success: false, error: 'URL slug is required.' };
+    }
+
+    if (
+      (formattedSlug !== existing.slug || targetDomainId !== existing.domainId) &&
+      (await isSlugTaken(targetDomainId, formattedSlug, id))
+    ) {
+      return { success: false, error: `Slug "${formattedSlug}" is already used on ${domainLabel}.` };
     }
 
     const updatedPage = await db.landingPage.update({
       where: { id },
       data: {
+        domainId: targetDomainId,
+        workspaceId: targetWorkspaceId,
         name: data.name,
         slug: formattedSlug,
         companyName: data.companyName,
@@ -280,19 +407,19 @@ export async function updateLandingPageAction(id: string, data: any) {
         status: data.status || PageStatus.ACTIVE,
         updatedAt: new Date(),
       },
+      include: { domain: domainSelect },
     });
 
     revalidatePath('/dashboard/landing-pages');
     revalidatePath('/dashboard');
     revalidatePath(`/dashboard/landing-pages/${id}/edit`);
-    revalidatePath(`/p/${formattedSlug}`);
-    if (existing.slug !== formattedSlug) {
-      revalidatePath(`/p/${existing.slug}`);
-    }
 
     return { success: true, page: updatedPage };
   } catch (error: any) {
     console.error('updateLandingPageAction error:', error);
+    if (error?.code === 'P2002') {
+      return { success: false, error: 'This slug is already used on the selected domain.' };
+    }
     return { success: false, error: error.message || 'Failed to update landing page.' };
   }
 }
@@ -307,21 +434,12 @@ export async function deleteLandingPageAction(id: string) {
     const page = await db.landingPage.findUnique({ where: { id } });
 
     if (!page) return { success: false, error: 'Landing page not found' };
-
-    if (
-      session.role !== UserRole.SUPER_ADMIN &&
-      session.workspaceId &&
-      page.workspaceId !== session.workspaceId &&
-      page.userEmail !== session.email
-    ) {
-      return { success: false, error: 'Unauthorized' };
-    }
+    if (!canAccessPage(session, page)) return { success: false, error: 'Unauthorized' };
 
     await db.landingPage.delete({ where: { id } });
 
     revalidatePath('/dashboard/landing-pages');
     revalidatePath('/dashboard');
-    revalidatePath(`/p/${page.slug}`);
 
     return { success: true };
   } catch (error: any) {
@@ -339,21 +457,23 @@ export async function duplicateLandingPageAction(id: string) {
     const original = await db.landingPage.findUnique({ where: { id } });
 
     if (!original) return { success: false, error: 'Original landing page not found' };
+    if (!canAccessPage(session, original)) return { success: false, error: 'Unauthorized' };
 
-    if (
-      session.role !== UserRole.SUPER_ADMIN &&
-      session.workspaceId &&
-      original.workspaceId !== session.workspaceId &&
-      original.userEmail !== session.email
-    ) {
-      return { success: false, error: 'Unauthorized' };
+    // Find a free slug on the same domain
+    let newSlug = '';
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = slugify(`${original.slug}-copy-${Math.floor(Math.random() * 9000) + 1000}`);
+      if (!(await isSlugTaken(original.domainId, candidate))) {
+        newSlug = candidate;
+        break;
+      }
     }
-
-    const newSlug = slugify(`${original.slug}-copy-${Math.floor(Math.random() * 9000) + 1000}`);
+    if (!newSlug) return { success: false, error: 'Could not generate a unique slug. Please try again.' };
 
     const copyPage = await db.landingPage.create({
       data: {
         workspaceId: original.workspaceId,
+        domainId: original.domainId,
         userEmail: session.email?.toLowerCase().trim() || original.userEmail,
         name: `${original.name} (Copy)`,
         slug: newSlug,
@@ -375,6 +495,7 @@ export async function duplicateLandingPageAction(id: string) {
         viewsCount: 0,
         clicksCount: 0,
       },
+      include: { domain: domainSelect },
     });
 
     revalidatePath('/dashboard/landing-pages');
@@ -396,15 +517,7 @@ export async function toggleLandingPageStatusAction(id: string) {
     const existing = await db.landingPage.findUnique({ where: { id } });
 
     if (!existing) return { success: false, error: 'Landing page not found' };
-
-    if (
-      session.role !== UserRole.SUPER_ADMIN &&
-      session.workspaceId &&
-      existing.workspaceId !== session.workspaceId &&
-      existing.userEmail !== session.email
-    ) {
-      return { success: false, error: 'Unauthorized' };
-    }
+    if (!canAccessPage(session, existing)) return { success: false, error: 'Unauthorized' };
 
     const newStatus = existing.status === PageStatus.ACTIVE ? PageStatus.INACTIVE : PageStatus.ACTIVE;
 
@@ -423,14 +536,14 @@ export async function toggleLandingPageStatusAction(id: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Public: Track Views & Clicks
+// Public: Track Views & Clicks (by page id: slugs are only unique per domain)
 // ---------------------------------------------------------------------------
 
-export async function trackPageViewAction(slug: string) {
+export async function trackPageViewAction(pageId: string) {
   try {
-    if (!slug) return;
+    if (!pageId || typeof pageId !== 'string') return;
     await db.landingPage.updateMany({
-      where: { slug: slug.toLowerCase().trim() },
+      where: { id: pageId, status: PageStatus.ACTIVE },
       data: { viewsCount: { increment: 1 } },
     });
   } catch {
@@ -438,33 +551,14 @@ export async function trackPageViewAction(slug: string) {
   }
 }
 
-export async function trackWhatsAppClickAction(slug: string) {
+export async function trackWhatsAppClickAction(pageId: string) {
   try {
-    if (!slug) return;
+    if (!pageId || typeof pageId !== 'string') return;
     await db.landingPage.updateMany({
-      where: { slug: slug.toLowerCase().trim() },
+      where: { id: pageId, status: PageStatus.ACTIVE },
       data: { clicksCount: { increment: 1 } },
     });
   } catch {
     // Non-blocking
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Public: Get Page by Slug (for /p/[slug] route)
-// ---------------------------------------------------------------------------
-
-export async function getPublicLandingPageBySlug(slug: string) {
-  try {
-    if (!slug) return null;
-
-    return db.landingPage.findFirst({
-      where: {
-        slug: slug.toLowerCase().trim(),
-        status: PageStatus.ACTIVE,
-      },
-    });
-  } catch {
-    return null;
   }
 }

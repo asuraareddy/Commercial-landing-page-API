@@ -92,7 +92,7 @@ export default function WorkspaceDomainsPage() {
           To connect your custom domain, log in to your DNS provider (Cloudflare, GoDaddy, Namecheap) and add a CNAME record:
         </p>
         <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-xs text-emerald-400 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <span>Type: CNAME &nbsp;|&nbsp; Name: go (or chat) &nbsp;|&nbsp; Value: cname.wagateway.com</span>
+          <span>Type: CNAME &nbsp;|&nbsp; Name: go (or chat) &nbsp;|&nbsp; Value: {typeof window !== 'undefined' ? window.location.hostname.replace(/^www\./, '') : 'your-app-domain.com'}</span>
           <span className="text-[10px] text-slate-500 font-sans font-semibold">SSL Auto-Provisioned</span>
         </div>
       </div>

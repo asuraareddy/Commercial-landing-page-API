@@ -1,5 +1,6 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
+import { PwaRegistrar } from "@/components/pwa-registrar";
 import "./globals.css";
 
 const inter = Inter({
@@ -11,9 +12,17 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "WhatsApp Bridge",
   description: "Seamlessly continue your conversation on WhatsApp.",
+  manifest: "/manifest.json",
   icons: {
     icon: "/favicon.ico",
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#ffffff",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
 };
 
 export default function RootLayout({
@@ -23,7 +32,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col bg-white text-zinc-900">{children}</body>
+      <body className="min-h-full flex flex-col bg-white text-zinc-900">
+        <PwaRegistrar />
+        {children}
+      </body>
     </html>
   );
 }

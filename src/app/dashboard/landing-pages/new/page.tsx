@@ -19,5 +19,5 @@ export default async function NewLandingPage() {
     status: 'ACTIVE',
   };
 
-  return <LandingPageForm initialData={initialDefaults} isEdit={false} />;
+  return <LandingPageForm initialData={initialDefaults} isEdit={false} domains={workspace?.domains || []} />;
 }

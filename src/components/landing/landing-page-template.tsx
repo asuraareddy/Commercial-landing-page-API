@@ -2,6 +2,7 @@
 
 import { motion } from 'framer-motion';
 import { MessageSquare, ExternalLink, ShieldCheck } from 'lucide-react';
+import Image from 'next/image';
 import { buildWhatsAppUrl } from '@/lib/utils';
 import { MetaPixel, trackWhatsAppClickEvent } from '@/components/analytics/meta-pixel';
 import { trackPageViewAction, trackWhatsAppClickAction } from '@/actions/landing-page.actions';
@@ -11,6 +12,7 @@ export interface LandingPageData {
   id?: string;
   name?: string;
   slug?: string;
+  domainId?: string | null;
   companyName: string;
   logoUrl?: string | null;
   mediaUrl?: string | null;
@@ -43,14 +45,14 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
   const whatsappUrl = buildWhatsAppUrl(data.whatsappNumber, data.prefilledMessage);
 
   useEffect(() => {
-    if (!isPreview && data.slug) {
-      trackPageViewAction(data.slug);
+    if (!isPreview && data.id) {
+      trackPageViewAction(data.id);
     }
-  }, [isPreview, data.slug]);
+  }, [isPreview, data.id]);
 
   const handleCtaClick = () => {
-    if (!isPreview && data.slug) {
-      trackWhatsAppClickAction(data.slug);
+    if (!isPreview && data.id) {
+      trackWhatsAppClickAction(data.id);
       trackWhatsAppClickEvent(pixelId);
     }
   };
@@ -85,12 +87,14 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.3 }}
-            className="w-16 h-16 md:w-20 md:h-20 rounded-2xl overflow-hidden shadow-lg border border-slate-100 p-1 bg-white flex items-center justify-center"
+            className="relative w-16 h-16 md:w-20 md:h-20 rounded-2xl overflow-hidden shadow-lg border border-slate-100 p-1 bg-white flex items-center justify-center"
           >
-            <img
+            <Image
               src={data.logoUrl}
               alt={data.companyName}
-              className="w-full h-full object-contain rounded-xl"
+              fill
+              className="object-contain rounded-xl"
+              sizes="(max-width: 768px) 64px, 80px"
             />
           </motion.div>
         ) : (
@@ -133,7 +137,7 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
               borderRadius: data.borderRadius || '16px',
             }}
           >
-            <div className={`w-full h-full overflow-hidden border border-slate-100 ${getShadowClass(data.shadow)}`}>
+            <div className={`relative w-full h-full overflow-hidden border border-slate-100 ${getShadowClass(data.shadow)}`}>
               {isVideo ? (
                 <video
                   key={data.mediaUrl}
@@ -147,12 +151,15 @@ export function LandingPageTemplate({ data, isPreview = false }: LandingPageTemp
                   style={{ objectFit: (data.objectFit as any) || 'cover' }}
                 />
               ) : (
-                <img
+                <Image
                   key={data.mediaUrl}
                   src={data.mediaUrl}
                   alt={data.companyName}
-                  className="w-full h-full"
+                  fill
+                  priority
+                  className="object-cover"
                   style={{ objectFit: (data.objectFit as any) || 'cover' }}
+                  sizes="(max-width: 768px) 100vw, 448px"
                 />
               )}
             </div>

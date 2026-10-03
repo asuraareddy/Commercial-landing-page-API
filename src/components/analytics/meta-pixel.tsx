@@ -14,7 +14,9 @@ interface MetaPixelProps {
   pixelId?: string | null;
 }
 
-export function MetaPixel({ pixelId }: MetaPixelProps) {
+export function MetaPixel({ pixelId: rawPixelId }: MetaPixelProps) {
+  const pixelId = rawPixelId ? rawPixelId.toString().replace(/[^0-9]/g, '') : '';
+
   useEffect(() => {
     if (!pixelId || typeof window === 'undefined') return;
 

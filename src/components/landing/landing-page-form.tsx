@@ -24,9 +24,10 @@ import Link from 'next/link';
 interface LandingPageFormProps {
   initialData?: any;
   isEdit?: boolean;
+  domains?: { id: string; domainName: string }[];
 }
 
-export function LandingPageForm({ initialData, isEdit = false }: LandingPageFormProps) {
+export function LandingPageForm({ initialData, isEdit = false, domains = [] }: LandingPageFormProps) {
   const router = useRouter();
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
@@ -37,6 +38,7 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
   const [formData, setFormData] = useState<LandingPageData>({
     name: initialData?.name || '',
     slug: initialData?.slug || '',
+    domainId: initialData?.domainId || (domains.length === 1 ? domains[0].id : ''),
     companyName: initialData?.companyName || '',
     logoUrl: initialData?.logoUrl || '',
     mediaUrl: initialData?.mediaUrl || '',
@@ -128,6 +130,11 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
 
     if (!(formData.name || '').trim()) {
       toast('Internal page name is required', 'error');
+      return;
+    }
+
+    if (!formData.domainId) {
+      toast('Please select a domain for this landing page', 'error');
       return;
     }
 
@@ -241,6 +248,27 @@ export function LandingPageForm({ initialData, isEdit = false }: LandingPageForm
               <Globe className="w-4 h-4 text-emerald-400" />
               General Page Configuration
             </h3>
+
+            {domains.length === 0 ? (
+              <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-500 text-sm">
+                <strong>No domains available.</strong> Please ask your Super Admin to assign a domain to your workspace before creating a landing page.
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold uppercase text-slate-300">Domain *</label>
+                <select
+                  required
+                  value={formData.domainId || ''}
+                  onChange={(e) => handleChange('domainId', e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="" disabled>Select a domain</option>
+                  {domains.map((d) => (
+                    <option key={d.id} value={d.id}>{d.domainName}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">

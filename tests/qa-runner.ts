@@ -10,7 +10,7 @@
  */
 
 import { registerAdminUserAction, loginAction } from '../src/actions/auth.actions';
-import { getPublicLandingPageBySlug } from '../src/actions/landing-page.actions';
+import { getPublicLandingPage } from '../src/lib/public-pages';
 import { db } from '../src/lib/db';
 import { PageStatus } from '../src/lib/types';
 
@@ -140,7 +140,7 @@ async function runQASuite() {
     if (dbRecord && dbRecord.slug === testSlug) {
       console.log('  -> Confirmed: Record is permanently saved in Prisma DB');
 
-      const pubPage = await getPublicLandingPageBySlug(testSlug);
+      const pubPage = await getPublicLandingPage(testSlug, 'localhost');
       if (pubPage && pubPage.companyName === 'Permanent QA Enterprises') {
         console.log('✅ PASS: Landing page created, saved in Prisma DB, and shareable URL active');
         passed++;
