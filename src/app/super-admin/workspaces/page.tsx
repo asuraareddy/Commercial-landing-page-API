@@ -165,7 +165,7 @@ export default function SuperAdminWorkspacesPage() {
                       <div className="text-[10px] text-slate-500">
                         {ws.subscription?.billingType === 'One Time' 
                           ? 'Never expires' 
-                          : \`Expires: \${ws.subscription?.expiryDate ? new Date(ws.subscription.expiryDate).toLocaleDateString() : 'N/A'}\`}
+                          : `Expires: ${ws.subscription?.expiryDate ? new Date(ws.subscription.expiryDate).toLocaleDateString() : 'N/A'}`}
                       </div>
                     </div>
                     <div className="font-bold text-emerald-400">
