@@ -6,6 +6,7 @@ import { UserRole, SubscriptionStatus, DomainStatus, PageStatus } from '@/lib/ty
 import { revalidatePath } from 'next/cache';
 import bcrypt from 'bcryptjs';
 import { normalizeDomain, invalidateDomainCache } from '@/lib/domains';
+import { addDomainToVercel, removeDomainFromVercel } from '@/lib/vercel';
 
 // ---------------------------------------------------------------------------
 // Stats
@@ -279,6 +280,12 @@ export async function createGlobalDomainAction(formData: FormData) {
       include: { workspace: { select: { id: true, name: true } } },
     });
 
+    // Auto-sync domain to Vercel
+    const vercelSync = await addDomainToVercel(domainName);
+    if (!vercelSync.success) {
+      console.warn('Domain created in DB but failed to sync to Vercel:', vercelSync.error);
+    }
+
     invalidateDomainCache();
     revalidatePath('/super-admin/domains');
     revalidatePath('/super-admin');
@@ -353,6 +360,9 @@ export async function deleteGlobalDomainAction(id: string) {
   await requireAuth([UserRole.SUPER_ADMIN]);
 
   try {
+    const domain = await db.domain.findUnique({ where: { id } });
+    if (!domain) return { success: false, error: 'Domain not found' };
+
     const pageCount = await db.landingPage.count({ where: { domainId: id } });
     if (pageCount > 0) {
       return {
@@ -362,6 +372,9 @@ export async function deleteGlobalDomainAction(id: string) {
     }
 
     await db.domain.delete({ where: { id } });
+
+    // Auto-remove domain from Vercel
+    await removeDomainFromVercel(domain.domainName);
 
     invalidateDomainCache();
     revalidatePath('/super-admin/domains');
