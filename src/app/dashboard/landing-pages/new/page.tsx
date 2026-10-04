@@ -1,3 +1,4 @@
+import { getAssignableDomainsAction } from '@/actions/landing-page.actions';
 import { getWorkspaceSettingsAction } from '@/actions/workspace.actions';
 import { LandingPageForm } from '@/components/landing/landing-page-form';
 import { getSession } from '@/lib/auth';
@@ -8,6 +9,7 @@ export default async function NewLandingPage() {
   if (!session) redirect('/login');
 
   const workspace = await getWorkspaceSettingsAction();
+  const domains = await getAssignableDomainsAction();
 
   const initialDefaults = {
     companyName: workspace?.name || '',
@@ -19,5 +21,5 @@ export default async function NewLandingPage() {
     status: 'ACTIVE',
   };
 
-  return <LandingPageForm initialData={initialDefaults} isEdit={false} domains={workspace?.domains || []} />;
+  return <LandingPageForm initialData={initialDefaults} isEdit={false} domains={domains} />;
 }

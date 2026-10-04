@@ -8,8 +8,10 @@ import { UserRole, SubscriptionStatus } from '@/lib/types';
 
 export async function loginAction(formData: FormData) {
   try {
+    console.log('[loginAction] Starting login attempt...');
     const rawEmail = formData.get('email')?.toString() || '';
     const rawPassword = formData.get('password')?.toString() || '';
+    console.log('[loginAction] Received email:', rawEmail);
 
     const validated = loginSchema.safeParse({ email: rawEmail, password: rawPassword });
     if (!validated.success) {
@@ -18,11 +20,14 @@ export async function loginAction(formData: FormData) {
 
     const { email, password } = validated.data;
     const cleanEmail = email.toLowerCase().trim();
+    console.log('[loginAction] Validated and cleaned email:', cleanEmail);
 
+    console.log('[loginAction] Querying database...');
     const user = await db.user.findUnique({
       where: { email: cleanEmail },
       include: { workspace: true },
     });
+    console.log('[loginAction] Database query complete. User found:', !!user);
 
     if (!user) {
       return { success: false, error: 'Invalid email or password' };
@@ -32,11 +37,14 @@ export async function loginAction(formData: FormData) {
       return { success: false, error: 'Your account has been suspended. Please contact support.' };
     }
 
+    console.log('[loginAction] Comparing passwords...');
     const isMatch = await bcrypt.compare(password, user.passwordHash);
+    console.log('[loginAction] Passwords match:', isMatch);
     if (!isMatch) {
       return { success: false, error: 'Invalid email or password' };
     }
 
+    console.log('[loginAction] Setting session cookie...');
     await setSessionCookie({
       id: user.id,
       email: user.email,
@@ -44,6 +52,7 @@ export async function loginAction(formData: FormData) {
       workspaceId: user.workspace?.id ?? null,
       workspaceName: user.workspace?.name ?? null,
     });
+    console.log('[loginAction] Session cookie set successfully.');
 
     return {
       success: true,

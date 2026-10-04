@@ -50,6 +50,25 @@ async function ensureWorkspace(userId: string, email?: string | null, sessionWor
   return newWs.id;
 }
 
+async function checkSubscriptionStatus(workspaceId: string): Promise<string | null> {
+  const ws = await db.workspace.findUnique({
+    where: { id: workspaceId },
+    include: { subscription: true }
+  });
+  
+  if (!ws || !ws.subscription) return null;
+  
+  if (ws.subscription.status === 'EXPIRED') {
+    return 'Your subscription has expired. Please contact support to renew.';
+  }
+  
+  if (ws.subscription.expiryDate && new Date(ws.subscription.expiryDate) < new Date()) {
+    return 'Your subscription has expired. Please contact support to renew.';
+  }
+  
+  return null;
+}
+
 /** Super admin can access everything; admins only pages in their workspace or created by their email. */
 function canAccessPage(session: SessionUser, page: { workspaceId: string; userEmail: string | null }) {
   if (session.role === UserRole.SUPER_ADMIN) return true;
@@ -284,6 +303,11 @@ export async function createLandingPageAction(data: any) {
         ? domain.workspaceId
         : await ensureWorkspace(session.id, userEmail, session.workspaceId);
 
+    if (session.role !== UserRole.SUPER_ADMIN) {
+      const subError = await checkSubscriptionStatus(workspaceId);
+      if (subError) return { success: false, error: subError };
+    }
+
     const formattedSlug = slugify(data.slug || data.name || '');
     if (!formattedSlug) {
       return { success: false, error: 'Page name is required to generate a URL slug.' };
@@ -369,6 +393,11 @@ export async function updateLandingPageAction(id: string, data: any) {
       }
     } else if (existing.domainId) {
       return { success: false, error: 'Please select a domain for this landing page.' };
+    }
+
+    if (session.role !== UserRole.SUPER_ADMIN) {
+      const subError = await checkSubscriptionStatus(targetWorkspaceId);
+      if (subError) return { success: false, error: subError };
     }
 
     const formattedSlug = slugify(data.slug || data.name || '');

@@ -1,4 +1,4 @@
-import { getLandingPageByIdAction } from '@/actions/landing-page.actions';
+import { getLandingPageByIdAction, getAssignableDomainsAction } from '@/actions/landing-page.actions';
 import { LandingPageForm } from '@/components/landing/landing-page-form';
 import { getSession } from '@/lib/auth';
 import { getWorkspaceSettingsAction } from '@/actions/workspace.actions';
@@ -19,7 +19,7 @@ export default async function EditLandingPage({ params }: EditPageProps) {
     notFound();
   }
 
-  const workspace = await getWorkspaceSettingsAction();
+  const domains = await getAssignableDomainsAction();
 
-  return <LandingPageForm initialData={page} isEdit={true} domains={workspace?.domains || []} />;
+  return <LandingPageForm initialData={page} isEdit={true} domains={domains} />;
 }

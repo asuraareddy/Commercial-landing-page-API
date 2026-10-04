@@ -415,13 +415,19 @@ export async function getAllWorkspacesAction() {
   }));
 }
 
-export async function updateSubscriptionStatusAction(workspaceId: string, status: SubscriptionStatus) {
+export async function updateSubscriptionDetailsAction(workspaceId: string, data: any) {
   await requireAuth([UserRole.SUPER_ADMIN]);
 
   try {
     await db.subscription.update({
       where: { workspaceId },
-      data: { status },
+      data: {
+        planName: data.planName,
+        billingType: data.billingType,
+        price: Number(data.price),
+        status: data.status,
+        expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
+      },
     });
 
     revalidatePath('/super-admin/workspaces');
