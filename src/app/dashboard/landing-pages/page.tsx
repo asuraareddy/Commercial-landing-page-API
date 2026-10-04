@@ -23,6 +23,7 @@ import {
   MousePointerClick,
   Power,
 } from 'lucide-react';
+import { getLandingPageUrl, getLandingPageDisplayUrl } from '@/lib/utils';
 
 export default function AdminLandingPagesListPage() {
   const router = useRouter();
@@ -215,7 +216,7 @@ export default function AdminLandingPagesListPage() {
                         )}
                         <div>
                           <span className="font-bold text-white block">{page.name}</span>
-                          <span className="font-mono text-xs text-slate-400 block">/p/{page.slug}</span>
+                          <span className="font-mono text-xs text-slate-400 block">{getLandingPageDisplayUrl(page)}</span>
                         </div>
                       </div>
                     </td>
@@ -264,7 +265,7 @@ export default function AdminLandingPagesListPage() {
                           <Eye className="w-4 h-4" />
                         </button>
                         <a
-                          href={`/p/${page.slug}`}
+                          href={getLandingPageUrl(page)}
                           target="_blank"
                           rel="noopener noreferrer"
                           title="Open Live URL"
