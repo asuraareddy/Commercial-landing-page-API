@@ -40,15 +40,21 @@ model Workspace {
 }
 
 model Domain {
-  id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  domainName  String    @unique
-  isPrimary   Boolean   @default(false)
-  status      String    @default("PENDING")
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  landingPages LandingPage[]
+  id                String        @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  domainName        String        @unique
+  isPrimary         Boolean       @default(false)
+  status            String        @default("PENDING")
+  sslStatus         String        @default("PENDING")
+  verificationToken String?
+  lastCheckedAt     DateTime?
+  verifiedAt        DateTime?
+  verificationError String?
+  lastCheckResults  String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  landingPages      LandingPage[]
 
   @@index([workspaceId])
 }

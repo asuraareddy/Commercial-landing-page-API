@@ -4,9 +4,16 @@ import { db } from '@/lib/db';
 import { requireAuth } from '@/lib/auth';
 import { UserRole, SubscriptionStatus, DomainStatus, PageStatus } from '@/lib/types';
 import { revalidatePath } from 'next/cache';
+import { headers } from 'next/headers';
 import bcrypt from 'bcryptjs';
 import { normalizeDomain, invalidateDomainCache } from '@/lib/domains';
 import { addDomainToVercel, removeDomainFromVercel } from '@/lib/vercel';
+import { generateVerificationToken } from '@/lib/dns';
+import {
+  enrichDomainWithDnsConfig,
+  runDomainDnsVerification,
+} from '@/lib/domain-service';
+import { SslStatus } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Stats
@@ -219,15 +226,50 @@ export async function restoreLandingPageAction(id: string) {
 export async function getAllDomainsAction() {
   await requireAuth([UserRole.SUPER_ADMIN]);
 
+  const reqHeaders = await headers();
+  const runtimeHost = reqHeaders.get('x-forwarded-host') || reqHeaders.get('host');
+
   const domains = await db.domain.findMany({
     include: {
-      workspace: { select: { id: true, name: true, user: { select: { email: true } } } },
+      workspace: {
+        select: {
+          id: true,
+          name: true,
+          supportEmail: true,
+          user: { select: { email: true } },
+        },
+      },
       _count: { select: { landingPages: true } },
     },
     orderBy: { createdAt: 'desc' },
   });
 
-  return domains;
+  return Promise.all(
+    domains.map((domain) => enrichDomainWithDnsConfig(domain, runtimeHost))
+  );
+}
+
+export async function verifyAnyDomainDnsAction(domainId: string) {
+  await requireAuth([UserRole.SUPER_ADMIN]);
+
+  const domain = await db.domain.findUnique({ where: { id: domainId } });
+  if (!domain) {
+    return { success: false, error: 'Domain not found' };
+  }
+
+  const reqHeaders = await headers();
+  const runtimeHost = reqHeaders.get('x-forwarded-host') || reqHeaders.get('host');
+
+  const summary = await runDomainDnsVerification(domain.id, runtimeHost);
+  if (!summary) {
+    return { success: false, error: 'Failed to verify domain DNS' };
+  }
+
+  invalidateDomainCache();
+  revalidatePath('/super-admin/domains');
+  revalidatePath('/dashboard/domains');
+  revalidatePath('/dashboard');
+  return { success: true, summary };
 }
 
 /** Lightweight list of workspaces for the domain-assignment dropdown. */
@@ -269,15 +311,18 @@ export async function createGlobalDomainAction(formData: FormData) {
     }
 
     const isFirstDomain = (await db.domain.count({ where: { workspaceId } })) === 0;
+    const verificationToken = generateVerificationToken();
 
     const newDomain = await db.domain.create({
       data: {
         workspaceId,
         domainName,
         isPrimary: isFirstDomain,
-        status: DomainStatus.ACTIVE,
+        status: DomainStatus.PENDING,
+        sslStatus: SslStatus.PENDING,
+        verificationToken,
       },
-      include: { workspace: { select: { id: true, name: true } } },
+      include: { workspace: { select: { id: true, name: true, supportEmail: true } } },
     });
 
     // Auto-sync domain to Vercel
@@ -285,6 +330,10 @@ export async function createGlobalDomainAction(formData: FormData) {
     if (!vercelSync.success) {
       console.warn('Domain created in DB but failed to sync to Vercel:', vercelSync.error);
     }
+
+    const reqHeaders = await headers();
+    const runtimeHost = reqHeaders.get('x-forwarded-host') || reqHeaders.get('host');
+    await runDomainDnsVerification(newDomain.id, runtimeHost);
 
     invalidateDomainCache();
     revalidatePath('/super-admin/domains');

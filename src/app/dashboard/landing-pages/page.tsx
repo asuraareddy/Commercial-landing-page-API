@@ -217,6 +217,18 @@ export default function AdminLandingPagesListPage() {
                         <div>
                           <span className="font-bold text-white block">{page.name}</span>
                           <span className="font-mono text-xs text-slate-400 block">{getLandingPageDisplayUrl(page)}</span>
+                          {page.domain?.domainName && (
+                            <a
+                              href={`/p/${page.slug}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-emerald-400 hover:underline font-mono inline-flex items-center gap-1 mt-0.5"
+                              title="Direct preview URL (works even before custom domain DNS propagates)"
+                            >
+                              <span>Direct link: /p/{page.slug}</span>
+                              <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          )}
                         </div>
                       </div>
                     </td>

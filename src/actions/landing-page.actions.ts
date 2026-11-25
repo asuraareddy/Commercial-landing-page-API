@@ -9,7 +9,13 @@ import { getAppHost } from '@/lib/domains';
 
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
 const ARCHIVAL_THROTTLE_MS = 6 * 60 * 60 * 1000; // run the archival sweep at most every 6h per instance
-const USABLE_DOMAIN_STATUSES = [DomainStatus.ACTIVE, DomainStatus.VERIFIED] as string[];
+const USABLE_DOMAIN_STATUSES = [
+  DomainStatus.ACTIVE,
+  DomainStatus.VERIFIED,
+  DomainStatus.CONNECTED,
+  DomainStatus.PENDING,
+  DomainStatus.FAILED,
+] as string[];
 
 const domainSelect = { select: { id: true, domainName: true } } as const;
 

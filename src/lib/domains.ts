@@ -75,7 +75,6 @@ export async function resolveDomainByHost(rawHost: string | null | undefined): P
     const found = await db.domain.findFirst({
       where: {
         domainName: { in: hostVariants(host) },
-        status: { in: [DomainStatus.ACTIVE, DomainStatus.VERIFIED] },
       },
       select: { id: true, domainName: true, workspaceId: true },
     });

@@ -15,31 +15,42 @@ export async function middleware(request: NextRequest) {
   }
 
   // 2. Standard App Routes that should NEVER be rewritten to custom domain /p/[slug]
-  const isStandardRoute = 
+  const isStandardRoute =
     pathname === '/' ||
     pathname.startsWith('/login') ||
     pathname.startsWith('/signup') ||
     pathname.startsWith('/dashboard') ||
     pathname.startsWith('/super-admin') ||
     pathname.startsWith('/forgot-password') ||
+    pathname.startsWith('/admin') ||
     pathname.startsWith('/p/');
 
-  // 3. Custom Domain Routing (e.g. go.client.com/slug)
-  const mainDomain = process.env.NEXT_PUBLIC_APP_URL ? new URL(process.env.NEXT_PUBLIC_APP_URL).host : '';
-  const cleanHost = host.split(':')[0];
-  const cleanMainHost = mainDomain ? mainDomain.split(':')[0] : '';
+  // 3. Custom Domain & Top-Level Slug Routing (e.g. https://skybook.live/test -> /p/test)
+  const rawHost = request.headers.get('x-forwarded-host') || request.headers.get('host') || host;
+  const cleanHost = rawHost.toLowerCase().split(',')[0].trim().split(':')[0];
+  let cleanMainHost = '';
+  try {
+    if (process.env.NEXT_PUBLIC_APP_URL) {
+      cleanMainHost = new URL(process.env.NEXT_PUBLIC_APP_URL).host.toLowerCase().split(':')[0];
+    }
+  } catch {
+    cleanMainHost = '';
+  }
 
-  // Only rewrite to /p/[slug] if it's a custom domain AND NOT a standard app route
-  if (
-    !isStandardRoute &&
-    cleanMainHost &&
-    cleanHost !== cleanMainHost &&
+  const isCustomDomain =
+    Boolean(cleanHost) &&
     !cleanHost.includes('localhost') &&
-    !cleanHost.includes('vercel.app')
-  ) {
-    const slug = pathname.replace('/', '');
-    if (slug) {
-      return NextResponse.rewrite(new URL(`/p/${slug}`, request.url));
+    !cleanHost.includes('127.0.0.1') &&
+    !cleanHost.endsWith('.vercel.app') &&
+    (!cleanMainHost || cleanHost !== cleanMainHost);
+
+  if (!isStandardRoute) {
+    const slug = pathname.replace(/^\/+|\/+$/g, '');
+    // Rewrite single-segment slug paths on custom domains (and top-level slugs on app domain) to /p/[slug]
+    if (slug && !slug.includes('/') && (isCustomDomain || pathname.split('/').filter(Boolean).length === 1)) {
+      const rewriteUrl = new URL(`/p/${slug}`, request.url);
+      rewriteUrl.search = request.nextUrl.search;
+      return NextResponse.rewrite(rewriteUrl);
     }
   }
 

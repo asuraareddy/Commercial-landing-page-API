@@ -4,8 +4,16 @@ import { db } from '@/lib/db';
 import { requireAuth } from '@/lib/auth';
 import { UserRole, DomainStatus } from '@/lib/types';
 import { revalidatePath } from 'next/cache';
+import { headers } from 'next/headers';
 import bcrypt from 'bcryptjs';
 import { normalizeDomain, invalidateDomainCache } from '@/lib/domains';
+import { generateVerificationToken } from '@/lib/dns';
+import {
+  enrichDomainWithDnsConfig,
+  runDomainDnsVerification,
+} from '@/lib/domain-service';
+import { addDomainToVercel, removeDomainFromVercel } from '@/lib/vercel';
+import { SslStatus } from '@/lib/types';
 import type { SessionUser } from '@/lib/auth';
 
 /**
@@ -68,10 +76,25 @@ export async function getWorkspaceDomainsAction() {
 
   if (!workspaceId) return [];
 
-  return db.domain.findMany({
+  const reqHeaders = await headers();
+  const runtimeHost = reqHeaders.get('x-forwarded-host') || reqHeaders.get('host');
+
+  const domains = await db.domain.findMany({
     where: { workspaceId },
+    include: {
+      workspace: {
+        select: { id: true, name: true, supportEmail: true },
+      },
+      _count: {
+        select: { landingPages: true },
+      },
+    },
     orderBy: { createdAt: 'desc' },
   });
+
+  return Promise.all(
+    domains.map((domain) => enrichDomainWithDnsConfig(domain, runtimeHost))
+  );
 }
 
 export async function addCustomDomainAction(domainName: string) {
@@ -98,6 +121,7 @@ export async function addCustomDomainAction(domainName: string) {
   }
 
   const isFirstDomain = (await db.domain.count({ where: { workspaceId } })) === 0;
+  const verificationToken = generateVerificationToken();
 
   try {
     const newDomain = await db.domain.create({
@@ -105,20 +129,82 @@ export async function addCustomDomainAction(domainName: string) {
         workspaceId,
         domainName: cleanDomain,
         isPrimary: isFirstDomain,
-        status: DomainStatus.ACTIVE,
+        status: DomainStatus.PENDING,
+        sslStatus: SslStatus.PENDING,
+        verificationToken,
+      },
+      include: {
+        workspace: {
+          select: { id: true, name: true, supportEmail: true },
+        },
+        _count: {
+          select: { landingPages: true },
+        },
       },
     });
+
+    await addDomainToVercel(cleanDomain);
+
+    const reqHeaders = await headers();
+    const runtimeHost = reqHeaders.get('x-forwarded-host') || reqHeaders.get('host');
+
+    await runDomainDnsVerification(newDomain.id, runtimeHost);
+
+    const refreshed = await db.domain.findUnique({
+      where: { id: newDomain.id },
+      include: {
+        workspace: {
+          select: { id: true, name: true, supportEmail: true },
+        },
+        _count: {
+          select: { landingPages: true },
+        },
+      },
+    });
+
+    const enriched = refreshed
+      ? await enrichDomainWithDnsConfig(refreshed, runtimeHost)
+      : await enrichDomainWithDnsConfig(newDomain, runtimeHost);
 
     invalidateDomainCache();
     revalidatePath('/dashboard/domains');
     revalidatePath('/dashboard');
-    return { success: true, domain: newDomain };
+    revalidatePath('/super-admin/domains');
+    return { success: true, domain: enriched };
   } catch (error: any) {
     if (error?.code === 'P2002') {
       return { success: false, error: 'This domain is already registered on the platform.' };
     }
     return { success: false, error: error.message || 'Failed to add domain' };
   }
+}
+
+export async function verifyWorkspaceDomainDnsAction(domainId: string) {
+  const session = await requireAuth([UserRole.ADMIN, UserRole.SUPER_ADMIN]);
+
+  const domain = await db.domain.findUnique({ where: { id: domainId } });
+  if (!domain) {
+    return { success: false, error: 'Domain not found' };
+  }
+
+  const ownWorkspaceId = await getOwnWorkspaceId(session);
+  if (session.role !== UserRole.SUPER_ADMIN && domain.workspaceId !== ownWorkspaceId) {
+    return { success: false, error: 'Unauthorized: You can only verify your own workspace domains.' };
+  }
+
+  const reqHeaders = await headers();
+  const runtimeHost = reqHeaders.get('x-forwarded-host') || reqHeaders.get('host');
+
+  const summary = await runDomainDnsVerification(domain.id, runtimeHost);
+  if (!summary) {
+    return { success: false, error: 'Failed to run DNS verification' };
+  }
+
+  invalidateDomainCache();
+  revalidatePath('/dashboard/domains');
+  revalidatePath('/dashboard');
+  revalidatePath('/super-admin/domains');
+  return { success: true, summary };
 }
 
 export async function setPrimaryDomainAction(domainId: string) {

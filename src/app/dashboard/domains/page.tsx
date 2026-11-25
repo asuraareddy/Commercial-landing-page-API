@@ -1,44 +1,119 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   getWorkspaceDomainsAction,
   addCustomDomainAction,
   setPrimaryDomainAction,
   deleteCustomDomainAction,
+  verifyWorkspaceDomainDnsAction,
 } from '@/actions/workspace.actions';
+import { DomainWithDnsView } from '@/lib/domain-service';
 import { useToast } from '@/components/ui/toast';
 import { Modal } from '@/components/ui/modal';
-import { Globe, Plus, CheckCircle2, Trash2, Star, ShieldCheck, ArrowRight } from 'lucide-react';
+import { DnsConfigurationPanel } from '@/components/domains/dns-configuration-panel';
+import {
+  DomainStatusBadge,
+  normalizeDomainConnectionStatus,
+} from '@/components/domains/domain-status-badge';
+import {
+  Globe,
+  Plus,
+  Trash2,
+  Star,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
+  SlidersHorizontal,
+} from 'lucide-react';
 
 export default function WorkspaceDomainsPage() {
   const { toast } = useToast();
-  const [domains, setDomains] = useState<any[]>([]);
+  const [domains, setDomains] = useState<DomainWithDnsView[]>([]);
   const [loading, setLoading] = useState(true);
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [domainInput, setDomainInput] = useState('');
+  const [expandedDomainIds, setExpandedDomainIds] = useState<Record<string, boolean>>({});
+  const [verifyingIds, setVerifyingIds] = useState<Record<string, boolean>>({});
 
-  const fetchDomains = async () => {
-    setLoading(true);
+  const fetchDomains = useCallback(async (preserveExpanded = true) => {
     const data = await getWorkspaceDomainsAction();
     setDomains(data);
     setLoading(false);
-  };
+    setExpandedDomainIds((prev) => {
+      const next: Record<string, boolean> = preserveExpanded ? { ...prev } : {};
+      for (const d of data) {
+        if (next[d.id] === undefined) {
+          // Auto-expand all domains by default so users immediately see their DNS records & instructions
+          next[d.id] = true;
+        }
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
-    fetchDomains();
-  }, []);
+    fetchDomains(false);
+  }, [fetchDomains]);
+
+  // Automatic background propagation check for PENDING / FAILED domains every 30s
+  useEffect(() => {
+    const unverifiedDomains = domains.filter(
+      (d) => normalizeDomainConnectionStatus(d.status) !== 'CONNECTED'
+    );
+    if (unverifiedDomains.length === 0) return;
+
+    const interval = setInterval(async () => {
+      let anyUpdated = false;
+      for (const d of unverifiedDomains) {
+        const res = await verifyWorkspaceDomainDnsAction(d.id);
+        if (res.success && res.summary?.status === 'CONNECTED') {
+          toast(`${d.domainName} DNS propagated and connected!`);
+          anyUpdated = true;
+        }
+      }
+      if (anyUpdated) {
+        fetchDomains(true);
+      }
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [domains, fetchDomains, toast]);
 
   const handleAddDomain = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSubmitting(true);
     const res = await addCustomDomainAction(domainInput);
-    if (res.success) {
-      toast('Custom domain added successfully!');
+    setIsSubmitting(false);
+
+    if (res.success && res.domain) {
+      toast('Custom domain added! Configure the DNS records below to connect it.');
       setIsAddOpen(false);
       setDomainInput('');
-      fetchDomains();
+      await fetchDomains(true);
+      setExpandedDomainIds((prev) => ({ ...prev, [res.domain.id]: true }));
     } else {
       toast(res.error || 'Failed to add domain', 'error');
+    }
+  };
+
+  const handleVerifyDns = async (domainId: string) => {
+    setVerifyingIds((prev) => ({ ...prev, [domainId]: true }));
+    const res = await verifyWorkspaceDomainDnsAction(domainId);
+    setVerifyingIds((prev) => ({ ...prev, [domainId]: false }));
+
+    if (res.success && res.summary) {
+      if (res.summary.status === 'CONNECTED') {
+        toast(`DNS verified! ${res.summary.domainName} is now Connected.`);
+      } else if (res.summary.status === 'FAILED') {
+        toast('DNS verification detected conflicting or incorrect records. See details below.', 'error');
+      } else {
+        toast('DNS records are still pending propagation. Check details below.', 'info');
+      }
+      await fetchDomains(true);
+    } else {
+      toast(res.error || 'Failed to verify DNS configuration', 'error');
     }
   };
 
@@ -46,7 +121,7 @@ export default function WorkspaceDomainsPage() {
     const res = await setPrimaryDomainAction(domainId);
     if (res.success) {
       toast('Primary domain updated!');
-      fetchDomains();
+      fetchDomains(true);
     } else {
       toast(res.error || 'Failed to set primary domain', 'error');
     }
@@ -57,116 +132,175 @@ export default function WorkspaceDomainsPage() {
     const res = await deleteCustomDomainAction(domainId);
     if (res.success) {
       toast('Custom domain deleted');
-      fetchDomains();
+      fetchDomains(true);
     } else {
       toast(res.error || 'Failed to delete domain', 'error');
     }
   };
+
+  const connectedCount = domains.filter(
+    (d) => normalizeDomainConnectionStatus(d.status) === 'CONNECTED'
+  ).length;
+  const pendingCount = domains.filter(
+    (d) => normalizeDomainConnectionStatus(d.status) === 'PENDING'
+  ).length;
+  const failedCount = domains.filter(
+    (d) => normalizeDomainConnectionStatus(d.status) === 'FAILED'
+  ).length;
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
-          <h1 className="text-2xl font-extrabold text-white tracking-tight">Custom Domains</h1>
+          <h1 className="text-2xl font-extrabold text-white tracking-tight">
+            Custom Domains &amp; DNS Configuration
+          </h1>
           <p className="text-sm text-slate-400">
-            Connect white-label subdomains for branded Meta Ads bridge links (e.g. go.client.com)
+            Connect white-label domains and verify live DNS propagation for your landing pages
           </p>
         </div>
         <button
           onClick={() => setIsAddOpen(true)}
-          className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-2"
+          className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-2 shrink-0"
         >
           <Plus className="w-4 h-4" />
           <span>Add Custom Domain</span>
         </button>
       </div>
 
-      {/* DNS Configuration Guide Box */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 space-y-3">
-        <h3 className="text-sm font-bold text-white flex items-center gap-2">
-          <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          White-Label DNS Setup Instructions
-        </h3>
-        <p className="text-xs text-slate-400 leading-relaxed">
-          To connect your custom domain, log in to your DNS provider (Cloudflare, GoDaddy, Namecheap) and add a CNAME record:
-        </p>
-        <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-xs text-emerald-400 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <span>Type: CNAME &nbsp;|&nbsp; Name: go (or chat) &nbsp;|&nbsp; Value: {typeof window !== 'undefined' ? window.location.hostname.replace(/^www\./, '') : 'your-app-domain.com'}</span>
-          <span className="text-[10px] text-slate-500 font-sans font-semibold">SSL Auto-Provisioned</span>
+      {/* Domain Status Summary Pills */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-[11px] uppercase font-semibold text-slate-400">Total Domains</span>
+          <p className="text-2xl font-black text-white mt-1">{domains.length}</p>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-[11px] uppercase font-semibold text-emerald-400">Connected</span>
+          <p className="text-2xl font-black text-white mt-1">{connectedCount}</p>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-[11px] uppercase font-semibold text-amber-400">Pending</span>
+          <p className="text-2xl font-black text-white mt-1">{pendingCount}</p>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <span className="text-[11px] uppercase font-semibold text-rose-400">Failed</span>
+          <p className="text-2xl font-black text-white mt-1">{failedCount}</p>
         </div>
       </div>
 
-      {/* Domains Inventory Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm text-slate-300">
-            <thead className="bg-slate-800/80 text-slate-400 text-xs font-semibold uppercase tracking-wider">
-              <tr>
-                <th className="px-6 py-4">Domain Name</th>
-                <th className="px-6 py-4">Primary Status</th>
-                <th className="px-6 py-4">DNS Verification</th>
-                <th className="px-6 py-4">Added Date</th>
-                <th className="px-6 py-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-slate-500">Loading domains...</td>
-                </tr>
-              ) : domains.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-slate-500">
-                    No custom domains added yet. Click "Add Custom Domain" above.
-                  </td>
-                </tr>
-              ) : (
-                domains.map((d) => (
-                  <tr key={d.id} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="px-6 py-4 font-bold text-white flex items-center gap-2.5">
-                      <Globe className="w-4 h-4 text-emerald-400" />
-                      <span>{d.domainName}</span>
-                    </td>
-                    <td className="px-6 py-4">
-                      {d.isPrimary ? (
-                        <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 inline-flex items-center gap-1">
-                          <Star className="w-3 h-3 fill-current" />
-                          Primary Domain
-                        </span>
+      {/* Domains Inventory & Independent DNS Config Panels */}
+      <div className="space-y-4">
+        {loading ? (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-slate-500 text-sm">
+            Loading workspace domains and checking DNS records...
+          </div>
+        ) : domains.length === 0 ? (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center space-y-3">
+            <Globe className="w-10 h-10 text-slate-600 mx-auto" />
+            <p className="text-sm font-semibold text-white">No custom domains connected yet</p>
+            <p className="text-xs text-slate-400 max-w-md mx-auto">
+              Add a domain or subdomain (such as <code className="text-emerald-400">skybook.live</code> or <code className="text-emerald-400">go.yourbrand.com</code>) to automatically generate its required DNS records.
+            </p>
+          </div>
+        ) : (
+          domains.map((d) => {
+            const isExpanded = expandedDomainIds[d.id] ?? true;
+            const isVerifying = !!verifyingIds[d.id];
+
+            return (
+              <div
+                key={d.id}
+                className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl transition-all"
+              >
+                {/* Domain Summary Row */}
+                <div className="p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div className="flex items-start sm:items-center gap-3 flex-wrap">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
+                      <Globe className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <span className="font-bold text-white text-base">{d.domainName}</span>
+                        {d.isPrimary ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 inline-flex items-center gap-1">
+                            <Star className="w-3 h-3 fill-current" />
+                            Primary
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleSetPrimary(d.id)}
+                            className="text-xs text-slate-400 hover:text-white underline font-medium"
+                          >
+                            Make Primary
+                          </button>
+                        )}
+                        <DomainStatusBadge status={d.status} />
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Added {new Date(d.createdAt).toLocaleDateString()} &middot;{' '}
+                        {d._count?.landingPages ?? 0} landing page(s)
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Row Actions */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => handleVerifyDns(d.id)}
+                      disabled={isVerifying}
+                      className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-xs font-semibold text-slate-200 transition-colors inline-flex items-center gap-1.5"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isVerifying ? 'animate-spin' : ''}`} />
+                      <span>{isVerifying ? 'Checking...' : 'Verify DNS'}</span>
+                    </button>
+
+                    <button
+                      onClick={() =>
+                        setExpandedDomainIds((prev) => ({
+                          ...prev,
+                          [d.id]: !isExpanded,
+                        }))
+                      }
+                      className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors inline-flex items-center gap-1.5 ${
+                        isExpanded
+                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-slate-800 hover:bg-slate-700 text-white'
+                      }`}
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                      <span>{isExpanded ? 'Hide DNS Setup' : 'DNS Setup & Records'}</span>
+                      {isExpanded ? (
+                        <ChevronUp className="w-3.5 h-3.5" />
                       ) : (
-                        <button
-                          onClick={() => handleSetPrimary(d.id)}
-                          className="text-xs text-slate-400 hover:text-white underline font-medium"
-                        >
-                          Make Primary
-                        </button>
+                        <ChevronDown className="w-3.5 h-3.5" />
                       )}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-400">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        {d.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-xs text-slate-500">
-                      {new Date(d.createdAt).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <button
-                        onClick={() => handleDeleteDomain(d.id)}
-                        className="p-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 transition-colors"
-                        title="Delete Domain"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                    </button>
+
+                    <button
+                      onClick={() => handleDeleteDomain(d.id)}
+                      className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 transition-colors"
+                      title="Delete Domain"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Expandable Per-Domain DNS Configuration Panel */}
+                {isExpanded && (
+                  <div className="px-5 pb-5 pt-1 border-t border-slate-800/60">
+                    <DnsConfigurationPanel
+                      domain={d}
+                      onVerify={handleVerifyDns}
+                      isVerifying={isVerifying}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
       </div>
 
       {/* Add Domain Modal */}
@@ -174,7 +308,7 @@ export default function WorkspaceDomainsPage() {
         isOpen={isAddOpen}
         onClose={() => setIsAddOpen(false)}
         title="Add Custom White-Label Domain"
-        description="Enter the domain or subdomain you wish to route to your landing pages."
+        description="Enter the domain or subdomain you wish to connect. Required DNS records will be generated automatically."
       >
         <form onSubmit={handleAddDomain} className="space-y-4">
           <div className="space-y-1.5">
@@ -184,9 +318,12 @@ export default function WorkspaceDomainsPage() {
               required
               value={domainInput}
               onChange={(e) => setDomainInput(e.target.value)}
-              placeholder="e.g. go.myclientagency.com"
+              placeholder="e.g. skybook.live or go.myclientagency.com"
               className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:border-emerald-500 focus:outline-none font-mono"
             />
+            <p className="text-[11px] text-slate-400">
+              Supports root/apex domains (skybook.live) and subdomains (go.client.com, chat.client.com).
+            </p>
           </div>
 
           <div className="flex justify-end gap-3 pt-4">
@@ -199,9 +336,10 @@ export default function WorkspaceDomainsPage() {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-sm font-bold shadow-lg shadow-emerald-500/20"
+              disabled={isSubmitting}
+              className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-slate-950 rounded-xl text-sm font-bold shadow-lg shadow-emerald-500/20"
             >
-              Add Domain
+              {isSubmitting ? 'Generating DNS...' : 'Add Domain'}
             </button>
           </div>
         </form>

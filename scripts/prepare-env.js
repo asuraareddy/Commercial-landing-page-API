@@ -27,7 +27,11 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-const REQUIRED_VARS = ['DATABASE_URL', 'DIRECT_URL', 'JWT_SECRET'];
+if (process.env.DATABASE_URL && !process.env.DIRECT_URL) {
+  process.env.DIRECT_URL = process.env.DATABASE_URL;
+}
+
+const REQUIRED_VARS = ['DATABASE_URL', 'JWT_SECRET'];
 
 let allPresent = true;
 

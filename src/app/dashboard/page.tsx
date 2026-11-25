@@ -14,6 +14,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import Link from 'next/link';
+import { getLandingPageDisplayUrl } from '@/lib/utils';
 
 export default async function AdminDashboardPage() {
   const session = await getSession();
@@ -191,7 +192,7 @@ export default async function AdminDashboardPage() {
                 landingPages.slice(0, 5).map((page) => (
                   <tr key={page.id} className="hover:bg-slate-800/30 transition-colors">
                     <td className="px-4 py-4 font-semibold text-white">{page.name}</td>
-                    <td className="px-4 py-4 font-mono text-xs text-slate-400">/p/{page.slug}</td>
+                    <td className="px-4 py-4 font-mono text-xs text-slate-400">{getLandingPageDisplayUrl(page)}</td>
                     <td className="px-4 py-4 text-xs text-slate-300">{page.whatsappNumber}</td>
                     <td className="px-4 py-4">
                       <span

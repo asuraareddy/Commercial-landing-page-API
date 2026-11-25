@@ -3,7 +3,7 @@ import { LandingPageTemplate } from '@/components/landing/landing-page-template'
 import { notFound } from 'next/navigation';
 import { Metadata } from 'next';
 
-export const revalidate = 60; // ISR cache for 60 seconds
+export const dynamic = 'force-dynamic';
 export const dynamicParams = true;
 
 interface PageProps {

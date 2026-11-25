@@ -45,11 +45,20 @@ export async function getRequestHost(): Promise<string> {
  * Wrapped in React cache() so generateMetadata + the page share one query per request.
  */
 export const getPublicLandingPage = cache(async (rawSlug: string, rawHost?: string) => {
-  try {
-    const slug = (rawSlug || '').toLowerCase().trim();
-    if (!slug || RESERVED_SLUGS.has(slug)) return null;
+  const slug = (rawSlug || '').toLowerCase().trim();
+  if (!slug || RESERVED_SLUGS.has(slug)) return null;
 
-    const host = rawHost ?? (await getRequestHost());
+  let host = rawHost ?? '';
+  if (!host) {
+    try {
+      host = await getRequestHost();
+    } catch (err: any) {
+      if (err?.digest === 'DYNAMIC_SERVER_USAGE') throw err;
+      host = '';
+    }
+  }
+
+  try {
     const domain = await resolveDomainByHost(host);
 
     if (domain) {
@@ -57,7 +66,14 @@ export const getPublicLandingPage = cache(async (rawSlug: string, rawHost?: stri
         where: { domainId: domain.id, slug, status: PageStatus.ACTIVE },
         select: publicPageSelect,
       });
-      if (page || !isAppHost(host)) return page;
+      if (page) return page;
+      if (!isAppHost(host)) {
+        // Fallback: check if the workspace that owns this domain has an active page with this slug
+        return db.landingPage.findFirst({
+          where: { workspaceId: domain.workspaceId, slug, status: PageStatus.ACTIVE },
+          select: publicPageSelect,
+        });
+      }
     }
 
     if (isAppHost(host)) {
@@ -68,7 +84,7 @@ export const getPublicLandingPage = cache(async (rawSlug: string, rawHost?: stri
     }
 
     return db.landingPage.findFirst({
-      where: { domainId: null, slug, status: PageStatus.ACTIVE },
+      where: { slug, status: PageStatus.ACTIVE },
       select: publicPageSelect,
     });
   } catch (error) {
