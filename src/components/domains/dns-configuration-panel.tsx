@@ -270,18 +270,40 @@ export function DnsConfigurationPanel({
 
       {/* Diagnostic Alert Banner */}
       {normalizedStatus === 'CONNECTED' ? (
-        <div className="flex items-start gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-200">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-          <div>
-            <p className="font-semibold text-emerald-300">
-              Domain Connected &amp; Routing Active
-            </p>
-            <p className="text-emerald-200/80 mt-0.5">
-              All required DNS records are verified. Visitors to{' '}
-              <strong className="text-white">https://{domain.domainName}/&lt;slug&gt;</strong> will
-              see your active landing pages.
-            </p>
+        <div className="space-y-2.5">
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-200">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold text-emerald-300">
+                Domain Connected &amp; Routing Active
+              </p>
+              <p className="text-emerald-200/80 mt-0.5">
+                All required DNS records are verified. Visitors to{' '}
+                <strong className="text-white">
+                  {dnsSummary.sslStatus === 'ACTIVE' ? 'https' : 'http'}://{domain.domainName}/&lt;slug&gt;
+                </strong>{' '}
+                are now routed directly to your active landing pages.
+              </p>
+            </div>
           </div>
+
+          {dnsSummary.sslStatus !== 'ACTIVE' && (
+            <div className="flex items-start gap-3 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-200">
+              <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-semibold text-amber-300">
+                  HTTPS / SSL Certificate Provisioning in Progress (HTTP is Live Now)
+                </p>
+                <p className="text-amber-200/90 leading-relaxed">
+                  Your domain is already live over{' '}
+                  <code className="text-white font-mono">http://{domain.domainName}</code>. Because DNS was recently updated, the edge network is currently issuing your HTTPS SSL certificate. To speed up HTTPS issuance immediately, ensure{' '}
+                  <code className="text-white font-mono">{domain.domainName}</code> is added under{' '}
+                  <strong className="text-white">Vercel Project &rarr; Settings &rarr; Domains</strong> and click{' '}
+                  <strong className="text-white">Refresh</strong> next to the domain.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div

@@ -11,6 +11,7 @@ import {
   DomainStatus,
   SslStatus,
 } from './types';
+import { verifyDomainOnVercel } from './vercel';
 
 export interface DomainWithDnsView {
   id: string;
@@ -236,6 +237,9 @@ export async function runDomainDnsVerification(
     domain.id,
     domain.verificationToken ?? null
   );
+
+  // Trigger Vercel domain verification & SSL provisioning if credentials exist
+  await verifyDomainOnVercel(domain.domainName);
 
   const summary = await verifyDomainDnsRecords({
     domainId: domain.id,

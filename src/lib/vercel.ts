@@ -63,3 +63,30 @@ export async function removeDomainFromVercel(domain: string) {
     return { success: false, error: error.message };
   }
 }
+
+export async function verifyDomainOnVercel(domain: string) {
+  const projectId = process.env.VERCEL_PROJECT_ID;
+  const token = process.env.VERCEL_ACCESS_TOKEN;
+
+  if (!projectId || !token) {
+    return { success: false, warning: 'Vercel API credentials not configured' };
+  }
+
+  try {
+    await addDomainToVercel(domain);
+    const response = await fetch(
+      `${VERCEL_API_URL}/v9/projects/${projectId}/domains/${domain}/verify`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+    const data = await response.json();
+    return { success: response.ok, verified: Boolean(data?.verified), data };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}

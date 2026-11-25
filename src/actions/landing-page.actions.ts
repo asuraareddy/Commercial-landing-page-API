@@ -17,7 +17,9 @@ const USABLE_DOMAIN_STATUSES = [
   DomainStatus.FAILED,
 ] as string[];
 
-const domainSelect = { select: { id: true, domainName: true } } as const;
+const domainSelect = {
+  select: { id: true, domainName: true, status: true, sslStatus: true },
+} as const;
 
 // ---------------------------------------------------------------------------
 // Internal helpers

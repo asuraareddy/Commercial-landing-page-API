@@ -19,11 +19,24 @@ export function cleanPhoneNumber(phone: string): string {
   return phone.replace(/[^0-9]/g, '');
 }
 
-type PageUrlInput = { slug: string; domain?: { domainName: string } | null };
+type PageUrlInput = {
+  slug: string;
+  domain?: {
+    domainName: string;
+    status?: string | null;
+    sslStatus?: string | null;
+  } | null;
+};
 
-/** Public URL of a landing page. Domain-mapped pages use their own domain; legacy pages stay on /p/<slug>. */
+/**
+ * Public URL of a landing page.
+ * Uses https:// when SSL is ACTIVE on the custom domain, or http:// while SSL is still provisioning.
+ */
 export function getLandingPageUrl(page: PageUrlInput): string {
-  if (page.domain?.domainName) return `https://${page.domain.domainName}/${page.slug}`;
+  if (page.domain?.domainName) {
+    const protocol = page.domain.sslStatus === 'ACTIVE' ? 'https' : 'http';
+    return `${protocol}://${page.domain.domainName}/${page.slug}`;
+  }
   return `/p/${page.slug}`;
 }
 

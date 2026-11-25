@@ -14,7 +14,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import Link from 'next/link';
-import { getLandingPageDisplayUrl } from '@/lib/utils';
+import { getLandingPageDisplayUrl, getLandingPageUrl } from '@/lib/utils';
 
 export default async function AdminDashboardPage() {
   const session = await getSession();
@@ -209,7 +209,7 @@ export default async function AdminDashboardPage() {
                     <td className="px-4 py-4 text-emerald-400 font-semibold">{page.clicksCount}</td>
                     <td className="px-4 py-4 text-right">
                       <a
-                        href={`/p/${page.slug}`}
+                        href={getLandingPageUrl(page)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition-colors"
